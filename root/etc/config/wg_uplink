@@ -1,2 +1,4 @@
 config globals 'main'
 	option interval '10'
+	option socket_mark_base '0x80000000'
+	option socket_mark_mask '0x800000ff'

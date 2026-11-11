@@ -61,6 +61,12 @@ Generic TCP requires a connection to be accepted. The iperf3 check sends a37-byt
 
 DNS checks bind the candidate source address, query A/AAAA according to family, and try TCP if UDP does not answer. Defaults are Cloudflare and Google in that family; custom servers are supported.
 
+### Configurable socket marks
+
+Under Monitoring, Generated socket mark base and Socket mark match mask define the namespace for app-generated interface marks. Defaults are 0x80000000 and 0x800000ff. The mask must include the base and at least six free bits for peer allocation. Slot IDs are deposited into those free bits, allowing another field layout when required.
+
+The configured mwan3 mmx_mask is detected automatically. Overlap and collisions with existing external RPDB mark rules are rejected before saving. Changing the namespace updates marks owned by the app and their routing matches; existing nonzero WG interface marks are preserved. UCI options are globals/main socket_mark_base and socket_mark_mask in /etc/config/wg_uplink.
+
 ### Sticky paths
 
 Destination/address-family/UDP-port rules and the WG interface mark select each peer's uplink. Different peers on one WG interface can use different uplinks.

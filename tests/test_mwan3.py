@@ -33,4 +33,22 @@ class Marks(unittest.TestCase):
    target,mask=map(lambda x:int(x,0),w.selection_mark('0x40000').split('/'))
    self.assertEqual((0x40000|0x500)&mask,target)
    with self.assertRaises(ValueError):w.selection_mark('0x400')
+ def test_configurable_namespace_and_mwan3_changes(self):
+  settings={'socket_mark_base':'0x80000000','socket_mark_mask':'0x8000ff00'}
+  reply=type('Result',(),{'returncode':0,'stdout':'0xff'})()
+  with patch.object(w.Path,'exists',return_value=True),patch.object(w,'command',return_value=reply):
+   config=w.validate_mark_settings(settings)
+   self.assertEqual(w.generated_mark(1,config),'0x80000100')
+   target,mask=map(lambda x:int(x,0),w.selection_mark('0x80000100',config).split('/'))
+   self.assertEqual((0x80000100|0x5)&mask,target)
+   with self.assertRaises(ValueError):w.validate_mark_settings({})
+ def test_mark_configuration_validation(self):
+  for settings in [{'socket_mark_base':'bad'},{'socket_mark_mask':'0xfffffffff'},{'socket_mark_base':'0x80000000','socket_mark_mask':'0xff'},{'socket_mark_mask':'0x80000001'}]:
+   with self.subTest(settings=settings),self.assertRaises(ValueError):w.mark_config(settings)
+ def test_external_routing_mark_collision_rejected(self):
+  result=type('Result',(),{'returncode':0,'stdout':'[{"priority":850,"fwmark":"0x40000","fwmask":"0x40000"}]'})()
+  settings={'socket_mark_base':'0x80000000','socket_mark_mask':'0x8000003f'}
+  with patch.object(w,'mwan3_mark_mask',return_value=0),patch.object(w,'command',return_value=result):
+   w.validate_mark_settings(settings,check_rules=True)
+   with self.assertRaises(ValueError):w.validate_mark_settings({'socket_mark_base':'0x80000000','socket_mark_mask':'0x803f0000'},check_rules=True)
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -4,7 +4,7 @@ import os,sys,json,time,re,socket,struct,subprocess,fcntl,ipaddress,hashlib,thre
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import wg_uplink_actions as audit
-VERSION="1.1.1"
+VERSION="1.2.0"
 RUN=Path("/var/run/wg-uplink")
 PERSIST=Path("/etc/wg-uplink")
 DISCOVER="/usr/libexec/wg-uplink-discover.uc"
@@ -129,6 +129,7 @@ def _is_ip(x):
  except ValueError:return False
 def write_config(ps,settings):
  text="config globals 'main'\n\toption interval '"+str(int(settings.get("interval",10)))+"'\n"
+ for key,value in mark_config(settings).items():text+="\toption "+key+" '"+value+"'\n"
  keys=set(DEFAULTS)|{"interface","peer_key","slot"}
  for p in ps:
   ident=p.get("id") or id_for(p["interface"],p["peer_key"])
@@ -171,13 +172,15 @@ def save_locked(data):
   return json.loads(result.stdout)
  d=inventory()
  if data.get("action")=="settings":
-  if set(data)-{"action","interval"}:raise ValueError("Unknown setting")
-  interval=int(data["interval"])
+  if set(data)-{"action","interval",*MARK_DEFAULTS}:raise ValueError("Unknown setting")
+  interval=int(data.get("interval",d["settings"].get("interval",10)))
   if not 5<=interval<=60:raise ValueError("Probe interval must be 5–60 seconds")
-  before=int(d["settings"].get("interval",10))
-  if before==interval:return {"ok":True}
-  write_config(policies(d),{"interval":interval})
-  audit.emit("uplink","change_settings",{"type":"update_settings"},{"changes":{"interval":{"before":before,"after":interval}}});kick()
+  before={"interval":int(d["settings"].get("interval",10)),**mark_config(d["settings"])}
+  after={"interval":interval,**validate_mark_settings(dict(d["settings"],**{k:data[k] for k in MARK_DEFAULTS if k in data}),check_rules=True)}
+  changes=audit.diff(before,after)
+  if not changes:return {"ok":True}
+  write_config(policies(d),after)
+  audit.emit("uplink","change_settings",{"type":"update_settings"},{"changes":changes});kick()
   return {"ok":True}
  p=validate(data,d)
  if p["enabled"]=="1":
@@ -418,7 +421,7 @@ def check_path(path,p):
    key=("tcp",host,port,mode);mapping[pre]["tcp"]=key
    specs[key]=lambda host=host,port=port,mode=mode:tcp(src,host,af,port,mode) if host else {"ok":False,"error":"No address for this family"}
   if p[pre+"_dns"]=="1":
-   servers=p[pre+"_dns_servers"] or (["2606:4700:4700::1111","2001:4860:4860::8888"] if af==6 else ["1.1.1.1","8.8.8.8"])
+   servers=p[pre+"_dns_servers"] or (["2606:4700:4700::1111","2001:4860:4860::8888"] if af==6 else ["1.2.0.1","8.8.8.8"])
    targets=[a for h in servers for a in resolve(h,af)[:1]]
    name=p[pre+"_dns_name"];key=("dns",tuple(targets),name);mapping[pre]["dns"]=key
    def dns_group(targets=targets,name=name):
@@ -433,9 +436,9 @@ def general_health(paths):
  if not available:return {"ok":False,"reason":"Preferred uplink has no usable native address/gateway"}
  jobs=[]
  for x in available:
-  for host in (["2606:4700:4700::1111","2001:4860:4860::8888"] if x["af"]==6 else ["1.1.1.1","8.8.8.8"]):
+  for host in (["2606:4700:4700::1111","2001:4860:4860::8888"] if x["af"]==6 else ["1.2.0.1","8.8.8.8"]):
    jobs.append((x["id"]+host,lambda x=x,host=host:ping(x["source"],host,x["af"],2)))
-  target="2606:4700:4700::1111" if x["af"]==6 else "1.1.1.1"
+  target="2606:4700:4700::1111" if x["af"]==6 else "1.2.0.1"
   jobs.append((x["id"]+"tcp",lambda x=x,target=target:tcp(x["source"],target,x["af"],443,"connect")))
  rs=parallel(jobs)
  return {"ok":any(v.get("ok") for v in rs.values()),"checks":rs}
@@ -525,34 +528,77 @@ def install_resources(paths,s):
   command(route+["metric","10"],check=True)
   changed=bool(rule(af,pref,["from",x["source"]+("/128" if af==6 else "/32"),"lookup",table],s.get("initialized",False))) or changed
  return changed
-# Keep generated socket identity outside mwan3 (0x3f00), common PBR fields,
-# the independent receiver (0x3f000000), and unrelated low routing marks.
+MARK_DEFAULTS={"socket_mark_base":"0x80000000","socket_mark_mask":"0x800000ff"}
 SOCKET_MARK_BASE=0x80000000
 SOCKET_MARK_MASK=0x800000ff
 
-def selection_mark(mark):
- value=int(str(mark),0)
- if value & SOCKET_MARK_BASE and not value & ~SOCKET_MARK_MASK:
-  return hex(value)+"/"+hex(SOCKET_MARK_MASK)
- # Preserve pre-existing interface marks, ignoring only mwan3's owned field.
- if Path('/etc/config/mwan3').exists():
-  result=command(['uci','-q','get','mwan3.@globals[0].mmx_mask'])
-  try:foreign=int(result.stdout.strip(),0) if result.returncode==0 else 0x3f00
-  except ValueError:raise ValueError('Invalid mwan3 mark mask')
-  if not 0<foreign<=0xffffffff:raise ValueError('Invalid mwan3 mark mask')
+def mark_config(settings=None):
+ settings=settings or {};values={}
+ for key,default in MARK_DEFAULTS.items():
+  raw=str(settings.get(key,default))
+  if not re.fullmatch(r'(0[xX][0-9a-fA-F]+|[0-9]+)',raw):raise ValueError('Invalid '+key)
+  value=int(raw,16 if raw.lower().startswith('0x') else 10)
+  if not 0<value<=0xffffffff:raise ValueError(key+' must be a nonzero 32-bit mark')
+  values[key]=value
+ base=values['socket_mark_base'];mask=values['socket_mark_mask']
+ if base & ~mask:raise ValueError('Socket mark base must fit inside the match mask')
+ if (mask & ~base).bit_count()<6:raise ValueError('Socket mark mask needs six free identity bits for 32 peers')
+ return {key:hex(value) for key,value in values.items()}
+
+def generated_mark(slot,settings=None):
+ config=mark_config(settings);base=int(config['socket_mark_base'],0);free=int(config['socket_mark_mask'],0)&~base;value=base
+ if not 1<=int(slot)<=32:raise ValueError('Invalid mark slot')
+ index=0
+ for bit in range(32):
+  if free & (1<<bit):
+   if int(slot) & (1<<index):value|=1<<bit
+   index+=1
+ return hex(value)
+
+def mwan3_mark_mask():
+ if not Path('/etc/config/mwan3').exists():return 0
+ result=command(['uci','-q','get','mwan3.@globals[0].mmx_mask'])
+ try:mask=int(result.stdout.strip(),0) if result.returncode==0 and result.stdout.strip() else 0x3f00
+ except ValueError:raise ValueError('Invalid mwan3 mark mask')
+ if not 0<mask<=0xffffffff:raise ValueError('Invalid mwan3 mark mask')
+ return mask
+
+def validate_mark_settings(settings,check_rules=False):
+ config=mark_config(settings);foreign=mwan3_mark_mask();mask=int(config['socket_mark_mask'],0)
+ if mask & foreign:raise ValueError('Socket mark match mask overlaps mwan3 '+hex(foreign))
+ if check_rules:
+  candidates=[int(generated_mark(slot,config),0) for slot in range(1,33)]
+  for af in (4,6):
+   result=command(['ip','-j','-'+str(af),'rule','show'],check=True)
+   for item in json.loads(result.stdout or '[]'):
+    if 'fwmark' not in item:continue
+    pref=int(item.get('priority',-1))
+    if (RUN/'rules'/(str(af)+'-'+str(pref)+'.json')).exists():continue
+    raw=item['fwmark'];number=int(raw,0) if isinstance(raw,str) else int(raw)
+    raw=item.get('fwmask',0xffffffff);other=int(raw,0) if isinstance(raw,str) else int(raw)
+    if any(value & other==number & other for value in candidates):raise ValueError('Socket mark namespace collides with IPv'+str(af)+' rule '+str(pref))
+ return config
+
+def selection_mark(mark,settings=None):
+ value=int(str(mark),0);config=mark_config(settings);base=int(config['socket_mark_base'],0);mask=int(config['socket_mark_mask'],0)
+ if value & base==base and not value & ~mask:return hex(value)+'/'+hex(mask)
+ foreign=mwan3_mark_mask()
+ if foreign:
   stable=0xffffffff ^ foreign
   if not value & stable:raise ValueError('Existing WG mark has no identity outside mwan3 bits')
-  return hex(value & stable)+"/"+hex(stable)
+  return hex(value & stable)+'/'+hex(stable)
  return str(mark)
 
-def mark_for(p,live):
- path=RUN/"interfaces"/(p["interface"]+".json")
- original=readjson(path)
+def mark_for(p,live,settings=None):
+ path=RUN/'interfaces'/(p['interface']+'.json');original=readjson(path)
  if not original:
-  mark=live.get("mark","off")
-  original={"original_mark":mark,"mark":mark if mark not in ("off","0","0x0") else hex(SOCKET_MARK_BASE+int(p["slot"]))}
-  atomic(path,original)
- return original["mark"]
+  original={'original_mark':live.get('mark','off'),'mark_slot':int(p['slot'])}
+ if original['original_mark'] in ('off','0','0x0'):
+  original.setdefault('mark_slot',int(p['slot']));original['mark']=generated_mark(original['mark_slot'],settings)
+ else:original['mark']=original['original_mark']
+ if readjson(path)!=original:atomic(path,original)
+ return original['mark']
+
 def update_guard(states,override=None):
  existing=command(["nft","list","table","inet","wg_uplink"]).returncode==0
  commands=["flush chain inet wg_uplink input","flush chain inet wg_uplink output"]
@@ -588,7 +634,7 @@ def update_guard(states,override=None):
  return True
 def select_route(p,target,mark,s):
  pref=300+int(p["slot"]);af=target["af"];addr=target["ips"][0]
- rule(af,pref,["to",addr+("/128" if af==6 else "/32"),"fwmark",selection_mark(mark),"ipproto","udp","dport",target["port"],"lookup",target["table"]],s.get("initialized",False))
+ rule(af,pref,["to",addr+("/128" if af==6 else "/32"),"fwmark",selection_mark(mark,p.get("_mark_settings")),"ipproto","udp","dport",target["port"],"lookup",target["table"]],s.get("initialized",False))
  # Remove only the opposite-family selection rule, never management rules.
  other=10-af;cache=RUN/"rules"/(str(other)+"-"+str(pref)+".json")
  if cache.exists():delrule(other,pref);cache.unlink()
@@ -688,7 +734,8 @@ def tick(force=False,trigger="check_condition_met"):
   for ident,p in enabled.items():
    p["id"]=ident;p["_interval"]=interval
    state=states.get(ident,{})
-   digest=hashlib.sha256(json.dumps({k:p.get(k) for k in DEFAULTS},sort_keys=True).encode()).hexdigest()
+   digest=hashlib.sha256(json.dumps({"policy":{k:p.get(k) for k in DEFAULTS},"mark_settings":{k:d["settings"].get(k,v) for k,v in MARK_DEFAULTS.items()}},sort_keys=True).encode()).hexdigest()
+   settings_changed=state.get("config_hash")!=digest
    if state.get("config_hash")!=digest:
     state.pop("failure_since",None);state.pop("recovery_since",None);state["timer"]=None
    state["config_hash"]=digest
@@ -702,7 +749,8 @@ def tick(force=False,trigger="check_condition_met"):
     paths=paths_for(p,peer,d)
     state=initialize_state(p,state,live,paths)
     before_resources=audit.paths_view(state.get("paths",[]))
-    state.update(mark=mark_for(p,live),listen_port=live["listen_port"],paths=paths)
+    p["_mark_settings"]=validate_mark_settings(d["settings"],check_rules=settings_changed or not state.get("initialized"))
+    state.update(mark=mark_for(p,live,p["_mark_settings"]),listen_port=live["listen_port"],paths=paths)
     repaired=install_resources(paths,state)
     after_resources=audit.paths_view(paths)
     if before_resources!=after_resources or repaired:
@@ -762,7 +810,7 @@ def status():
   if not any(x["name"]==name for x in cards):cards.append({"name":name,"proto":"wireguard","peers":[],"runtime_only":True})
  runtime={x["interface"]:x for x in d["runtime"]}
  uplinks=[dict(x,device=runtime.get(x["name"],{}).get("l3_device",""),up=runtime.get(x["name"],{}).get("up",False),family_children={str(af):[r["interface"] for r in family_rows(x["name"],af,d)[1] if r["interface"]==x["name"]+"_"+str(af) or (next((c.get("device","") for c in d["interfaces"] if c["name"]==r["interface"]),"")=="@"+x["name"])] for af in (4,6)}) for x in d["interfaces"] if x["proto"]!="wireguard" and x["name"]!="loopback"]
- return {"ok":True,"version":VERSION,"interfaces":cards,"uplinks":uplinks,"receiver":receiver_status(),"settings":{"interval":int(d["settings"].get("interval",10))}}
+ return {"ok":True,"version":VERSION,"interfaces":cards,"uplinks":uplinks,"receiver":receiver_status(),"settings":{"interval":int(d["settings"].get("interval",10)),**mark_config(d["settings"]),"mwan3_mask":hex(mwan3_mark_mask())}}
 def daemon():
  first=True
  while True:

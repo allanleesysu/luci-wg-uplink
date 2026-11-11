@@ -37,6 +37,14 @@ async function run(source,data) {
  assert(text(modal).includes('Asia/Singapore')&&text(modal).includes('switch_path')&&text(modal).includes('receiver'),'Action log popup fields missing');
  assert(button(modal,'Refresh')&&button(modal,'Close'),'Action log popup controls missing');
  assert(modal.attrs.class==='wg-uplink-log'&&text(modal).includes('width: 1240px')&&text(modal).includes('max-width: calc(100vw - 2rem)'),'Action log width does not follow the page/viewport');
+ const markFields=walk(root).filter(x=>x.tag==='div'&&x.attrs.class==='cbi-value');
+ const baseField=markFields.find(x=>text(x.children[0])==='Generated socket mark base');
+ const maskField=markFields.find(x=>text(x.children[0])==='Socket mark match mask');
+ assert(baseField&&maskField,'Mark namespace controls missing');
+ const baseInput=walk(baseField).find(x=>x.tag==='input'),maskInput=walk(maskField).find(x=>x.tag==='input');
+ assert(baseInput.value===(data.settings.socket_mark_base||'0x80000000')&&maskInput.value===(data.settings.socket_mark_mask||'0x800000ff'),'Mark namespace values not rendered');
+ await button(root,'Save settings').attrs.click();
+ assert(request.action==='settings'&&request.socket_mark_base===baseInput.value&&request.socket_mark_mask===maskInput.value,'Mark namespace save not serialized');
  const config=walk(root).filter(x=>x.tag==='button'&&text(x)==='Configure');
  const eligible=data.interfaces.reduce((n,i)=>n+i.peers.filter(p=>p.eligible).length,0);
  assert(config.length===eligible,'Configure shown for an ineligible peer');

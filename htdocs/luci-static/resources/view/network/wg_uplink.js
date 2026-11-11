@@ -251,11 +251,14 @@ return view.extend({
   function refresh(){return getStatus().then(success).then(display);}
   display(data);
   poll.add(function(){return refresh().catch(function(e){console.warn('WG Uplink status:',e);});},5);
-  var interval=input(data.settings.interval,'number');
+  var interval=input(data.settings.interval,'number'),markBase=input(data.settings.socket_mark_base||'0x80000000'),markMask=input(data.settings.socket_mark_mask||'0x800000ff');
   var controls=E('div',{'class':'cbi-section'},[
    E('h3',{},_('Monitoring')),
    row(_('Probe interval (seconds)'),interval,_('5–60 seconds. A fast-track decision cannot happen sooner than a completed observation.')),
-   E('button',{'class':'btn',click:function(){return savePolicy(JSON.stringify({action:'settings',interval:interval.value})).then(success).then(refresh).catch(notify);}},_('Save interval')),
+   row(_('Generated socket mark base'),markBase,_('Namespace used when WG has no existing nonzero mark.')),
+   row(_('Socket mark match mask'),markMask,_('Owned identity bits, including at least six free bits for allocation. Changes refresh managed marks and routes.')),
+   row(_('Detected mwan3 mark mask'),E('code',{},data.settings.mwan3_mask||'0x0'),_('The generated match mask must not overlap this field. Existing routing-rule conflicts are rejected.')),
+   E('button',{'class':'btn',click:function(){return savePolicy(JSON.stringify({action:'settings',interval:interval.value,socket_mark_base:markBase.value,socket_mark_mask:markMask.value})).then(success).then(refresh).catch(notify);}},_('Save settings')),
    ' ',
    E('button',{'class':'btn',click:function(){return checkNow().then(success).then(function(){ui.addNotification(null,E('p',{},_('A check was queued. Live results update automatically.')));});}},_('Check now'))
   ]);

@@ -37,7 +37,7 @@ Configuration writes are restricted to the app's own UCI file. Network/firewall 
 
 ## mwan3/PBR coexistence
 
-Generated WG socket marks use 0x80000000 plus the slot in the low byte. Endpoint selection rules match only 0x800000ff, so mwan3's 0x3f00 updates and the receiver's reserved field cannot change the selector's identity. The generated values do not set the separate 0x40000 management-pin bit.
+By default, generated WG socket marks use 0x80000000 plus the slot in the low byte. Endpoint selection rules match 0x800000ff, so mwan3's 0x3f00 updates and the receiver's reserved field cannot change the selector's identity. The default generated values do not set the separate 0x40000 management-pin bit. The global socket_mark_base/socket_mark_mask settings can relocate this namespace; slot bits are deposited into free mask bits. Settings validation detects the current mwan3 mask and tests all allocated slot identities against existing, non-owned RPDB mark rules before saving.
 
 For a retained nonzero interface mark, the configured mwan3 mmx_mask is excluded from the RPDB match. A legacy mark containing only mwan3-owned bits is rejected because it has no stable identity outside that field. Other PBR modules must preserve the selector's identity bits; full-mark overwrites require integration rather than an assumption of compatibility.
 
