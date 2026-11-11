@@ -1,5 +1,5 @@
 """Optional receiver-only WireGuard sticky replies using per-flow conntrack marks."""
-import json,re,ipaddress
+import json,re,ipaddress,hashlib
 MASK=0x3f000000
 KEEP=0xc0ffffff
 TABLE="wg_uplink_receiver"
@@ -70,6 +70,8 @@ def sync(w,d,states):
  if not enabled:
   if owned.get("active") or owned.get("slots"):
    cleanup(w,owned);w.atomic(w.RUN/"receiver-owned.json",{"active":False,"slots":[],"priorities":[]})
+   if hasattr(w,"audit"):w.audit.emit("receiver",getattr(w,"action_trigger","change_settings"),{"type":"disable_receiver"},{"before":w.readjson(w.RUN/"receiver-intent.json"),"after":{"enabled":False}})
+   w.atomic(w.RUN/"receiver-intent.json",{"enabled":False})
   out={"enabled":False,"active":False,"uplinks":[],"ports":[]}
   w.atomic(w.RUN/"receiver.json",out);return out
  # Do not overwrite a WG socket mark which already reserves our high bits.
@@ -100,12 +102,15 @@ def sync(w,d,states):
  w.atomic(w.RUN/"receiver-owned.json",{"active":owned.get("active",False),"slots":list(ids.values()),"priorities":[200+i for i in ids.values()]})
  # Retired slots keep unreachable defaults while enabled, so stale flow
  # marks cannot fall through to another uplink or be reused in this boot.
+ resources_changed=False
  for slot in ids.values():
   for af in (4,6):
    table=49000+slot*2+(af==6);pref=200+slot
    cache=w.RUN/"receiver-tables"/(str(af)+"-"+str(table)+".json")
+   present=bool(w.command(["ip","-"+str(af),"route","show","table",table]).stdout.strip())
+   if not present:resources_changed=True
    if not cache.exists():
-    if w.command(["ip","-"+str(af),"route","show","table",table]).stdout.strip():raise ValueError("Receiver routing table is already used")
+    if present:raise ValueError("Receiver routing table is already used")
     w.atomic(cache,{"owned":True})
    w.command(["ip","-"+str(af),"route","replace","unreachable","default","table",table,"metric","42760"],check=True)
    path=next((p for u in uplinks if u["slot"]==slot for p in u["paths"] if p["af"]==af and p["available"]),None)
@@ -118,12 +123,24 @@ def sync(w,d,states):
     if path["gateway"]:route+=["onlink"]
     w.command(route+["metric","10"],check=True)
    else:w.command(["ip","-"+str(af),"route","flush","table",table,"type","unicast"])
-   w.rule(af,pref,["fwmark",hex(slot<<24)+"/"+hex(MASK),"lookup",table],pref in owned.get("priorities",[]))
- batch=[]
- if w.command(["nft","list","table","inet",TABLE]).returncode==0:batch.append("delete table inet "+TABLE)
- batch+=build_rules(uplinks,ports,states,list(ids.values()))
- w.command(["nft","-c","-f","-"],stdin="\n".join(batch)+"\n",check=True)
- w.command(["nft","-f","-"],stdin="\n".join(batch)+"\n",check=True)
+   resources_changed=bool(w.rule(af,pref,["fwmark",hex(slot<<24)+"/"+hex(MASK),"lookup",table],pref in owned.get("priorities",[]))) or resources_changed
+ rules=build_rules(uplinks,ports,states,list(ids.values()))
+ desired=hashlib.sha256("\n".join(rules).encode()).hexdigest()
+ cache=w.readjson(w.RUN/"receiver-nft.json")
+ current=w.audit.nft_fingerprint(w.command,TABLE)
+ nft_changed=cache.get("desired")!=desired or current is None or cache.get("actual")!=current
+ if nft_changed:
+  batch=(["delete table inet "+TABLE] if current is not None else [])+rules
+  w.command(["nft","-c","-f","-"],stdin="\n".join(batch)+"\n",check=True)
+  w.command(["nft","-f","-"],stdin="\n".join(batch)+"\n",check=True)
+  w.atomic(w.RUN/"receiver-nft.json",{"desired":desired,"actual":w.audit.nft_fingerprint(w.command,TABLE)})
+ intent={"enabled":True,"ports":sorted(set(ports)),"rules":desired,"slots":ids,
+  "uplinks":[{"interface":u["role"],"paths":w.audit.paths_view(u["paths"])} for u in uplinks],
+  "outbound_exclusions":states}
+ before=w.readjson(w.RUN/"receiver-intent.json")
+ if before!=intent or resources_changed or nft_changed:
+  w.audit.emit("receiver",getattr(w,"action_trigger","interface_detail_update_observed"),{"type":"reconcile_receiver_routes_and_firewall"},{"before":before,"after":intent,"restored_missing_resources":resources_changed,"nftables_changed":nft_changed})
+ w.atomic(w.RUN/"receiver-intent.json",intent)
  w.atomic(w.RUN/"receiver-owned.json",{"active":True,"slots":list(ids.values()),"priorities":[200+i for i in ids.values()]})
  out={"enabled":True,"active":True,"uplinks":[{"interface":x["role"],"device":x["device"],"families":[p["af"] for p in x["paths"] if p["available"]]} for x in uplinks],"ports":ports,"mark_mask":hex(MASK)}
  w.atomic(w.RUN/"receiver.json",out);return out

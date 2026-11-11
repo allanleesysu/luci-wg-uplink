@@ -72,3 +72,7 @@ Unit fixtures cover policy validation, timer boundaries, active recovery, shared
 Installed-instance checks exercise authenticated LuCI HTTP/RPC, rejected unauthenticated/read-only writes, same-policy Save & Apply, candidate source-bound DNS/TCP and live WG connectivity. UI fixtures exercise rendering and both configuration forms.
 
 The optional namespace traffic test requires veth support; it is not a pass when the kernel lacks that module. No SDK-built package or browser visual inspection is implied by source/HTTP checks.
+
+## Action journal
+
+Persistent, bounded, root-only JSONL journals are separate from RAM probe history. App settings saves record only changed fields; switches retain decision/check evidence before timers reset; rollback records attempted and restored paths; interface reconciliation records before/after route resources. NFT fingerprints exclude volatile handles and counters, so unchanged rules are not rewritten. Guard rules are canonicalized to prevent ordering from causing an action. The independent receiver journals its own reconciliation, repair and cleanup. Show log reads both scopes via a read-only RPC and displays at most 100 recent entries within a bounded response.

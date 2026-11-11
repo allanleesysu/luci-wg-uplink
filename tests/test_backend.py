@@ -3,6 +3,7 @@ import sys,importlib.util,copy,tempfile,json
 from pathlib import Path
 spec=importlib.util.spec_from_file_location("wgu",sys.argv[1])
 w=importlib.util.module_from_spec(spec);spec.loader.exec_module(w)
+w.audit.emit=lambda *args:True
 count=0
 def check(condition,name):
  global count

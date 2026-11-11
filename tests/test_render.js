@@ -22,6 +22,7 @@ async function run(source,data) {
  function assert(condition,message){if(!condition)throw Error(message);}
  let modal,request;
  const rpc={declare:spec=>(arg)=>{
+  if(spec.method==='logs')return Promise.resolve({ok:true,entries:[{date:'2026-11-12',time:'01:00:00',timezone:'Asia/Singapore',utc_offset:'+08:00',scope:'uplink',trigger:'check_condition_met',action:{type:'switch_path',interface:'wg0'},data:{before:{role:'wan1'},after:{role:'wan3'},checks:{loss:0}}},{date:'2026-11-12',time:'00:59:00',timezone:'Asia/Singapore',utc_offset:'+08:00',scope:'receiver',trigger:'start_service',action:{type:'reconcile_receiver_routes_and_firewall'},data:{before:{},after:{enabled:true}}}]});
   if(spec.method==='save'){request=JSON.parse(arg);return Promise.resolve({ok:true});}
   return Promise.resolve(data);
  }};
@@ -31,6 +32,10 @@ async function run(source,data) {
  const root=v.render(data);
  function button(tree,label){return walk(tree).find(x=>x.tag==='button'&&text(x)===label);}
  assert(button(root,'Receiver'),'Receiver tab missing');
+ assert(button(root,'Show log'),'Title action log button missing');
+ await button(root,'Show log').attrs.click();
+ assert(text(modal).includes('Asia/Singapore')&&text(modal).includes('switch_path')&&text(modal).includes('receiver'),'Action log popup fields missing');
+ assert(button(modal,'Refresh')&&button(modal,'Close'),'Action log popup controls missing');
  const config=walk(root).filter(x=>x.tag==='button'&&text(x)==='Configure');
  const eligible=data.interfaces.reduce((n,i)=>n+i.peers.filter(p=>p.eligible).length,0);
  assert(config.length===eligible,'Configure shown for an ineligible peer');

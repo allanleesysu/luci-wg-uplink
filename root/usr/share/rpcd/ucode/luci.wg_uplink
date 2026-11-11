@@ -12,6 +12,7 @@ function backend(action,data) {
 return {
  'luci.wg_uplink': {
   status:{call:function(){return backend('status',null);}},
+  logs:{call:function(){return backend('logs',null);}},
   save:{args:{data:'data'},call:function(req){
    if(length(req.args.data)>16384)return {ok:false,error:'Request too large'};
    return backend('save',req.args.data);

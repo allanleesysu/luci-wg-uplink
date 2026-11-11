@@ -17,6 +17,7 @@ for tree,dest in ((base/"root",Path("/")),(base/"htdocs",Path("/www"))):
   os.replace(tmp,target);installed.append(str(target))
 preserve=Path("/etc/sysupgrade.conf");text=preserve.read_text() if preserve.exists() else ""
 if text and not text.endswith("\n"):text+="\n"
+installed.append("/etc/wg-uplink/")
 for path in installed:
  if path not in text.splitlines():text+=path+"\n"
 preserve.write_text(text)

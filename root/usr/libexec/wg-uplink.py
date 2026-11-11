@@ -2,7 +2,9 @@
 """WG Uplink: source-pinned health checks and per-peer WireGuard uplink policy."""
 import os,sys,json,time,re,socket,struct,subprocess,fcntl,ipaddress,hashlib,threading,queue,shutil,shlex
 from pathlib import Path
-VERSION="1.0.2"
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import wg_uplink_actions as audit
+VERSION="1.1.0"
 RUN=Path("/var/run/wg-uplink")
 PERSIST=Path("/etc/wg-uplink")
 DISCOVER="/usr/libexec/wg-uplink-discover.uc"
@@ -147,6 +149,20 @@ def receiver_status():
  if not Path("/usr/sbin/wg-sticky-receiver").exists():return {"installed":False}
  try:return json.loads(command(["/usr/sbin/wg-sticky-receiver","status"],timeout=6,check=True).stdout)
  except Exception as e:return {"installed":True,"ok":False,"error":str(e)[:200]}
+def settings_view(p):
+ out={k:p.get(k,DEFAULTS.get(k)) for k in set(DEFAULTS)|{"interface","peer_key"}}
+ for k in ("fo_ping_loss","rec_ping_loss"):
+  try:out[k]=float(out[k])
+  except (ValueError,TypeError):pass
+ return out
+def action_logs():
+ entries=audit.read("uplink")
+ if Path("/usr/sbin/wg-sticky-receiver").exists():
+  try:entries+=json.loads(command(["/usr/sbin/wg-sticky-receiver","logs"],timeout=5,check=True).stdout).get("entries",[])
+  except Exception:pass
+ entries=sorted(entries,key=lambda x:x.get("epoch",0),reverse=True)[:100]
+ while len(entries)>1 and len(json.dumps(entries))>192*1024:entries.pop()
+ return {"ok":True,"entries":entries}
 def save_locked(data):
  if data.get("action")=="receiver":
   if not Path("/usr/sbin/wg-sticky-receiver").exists():raise ValueError("Standalone receiver service is not installed")
@@ -158,7 +174,10 @@ def save_locked(data):
   if set(data)-{"action","interval"}:raise ValueError("Unknown setting")
   interval=int(data["interval"])
   if not 5<=interval<=60:raise ValueError("Probe interval must be 5–60 seconds")
-  write_config(policies(d),{"interval":interval});kick()
+  before=int(d["settings"].get("interval",10))
+  if before==interval:return {"ok":True}
+  write_config(policies(d),{"interval":interval})
+  audit.emit("uplink","change_settings",{"type":"update_settings"},{"changes":{"interval":{"before":before,"after":interval}}});kick()
   return {"ok":True}
  p=validate(data,d)
  if p["enabled"]=="1":
@@ -171,8 +190,11 @@ def save_locked(data):
  slot=int(existing.get("slot",0)) or next((n for n in range(1,33) if n not in used),0)
  if not slot:raise ValueError("Maximum 32 managed peers")
  p["slot"]=str(slot)
+ changes=audit.diff(settings_view(existing),settings_view(p))
+ if not changes and existing:return {"ok":True,"id":p["id"],"message":"Settings unchanged."}
  existing_policies=[x for x in policies(d) if x.get("id")!=p["id"]]
  write_config(existing_policies+[p],d["settings"])
+ audit.emit("uplink","change_settings",{"type":"update_peer_policy","interface":p["interface"],"peer":p["id"]},{"changes":changes})
  kick()
  return {"ok":True,"id":p["id"],"message":"Saved; the controller applies the configured observation windows."}
 def kick():
@@ -471,24 +493,28 @@ def rule(af,pref,args,known):
  cache=RUN/"rules"/(str(af)+"-"+str(pref)+".json")
  old=readjson(cache)
  if lines and not old:raise ValueError("Routing priority "+str(pref)+" is already used")
- if old.get("args")==sig and lines:return
+ if old.get("args")==sig and lines:return False
  delrule(af,pref)
  command(["ip","-"+str(af),"rule","add","pref",pref]+sig,check=True)
  atomic(cache,{"args":sig})
+ return True
 def install_resources(paths,s):
+ changed=False
  for x in paths:
   af=x["af"];table=x["table"];pref=x["pref"]
   opposite=RUN/"rules"/(str(10-af)+"-"+str(pref)+".json")
-  if opposite.exists():delrule(10-af,pref);opposite.unlink()
+  if opposite.exists():delrule(10-af,pref);opposite.unlink();changed=True
   owned=RUN/"tables"/(str(af)+"-"+str(table)+".json")
+  table_present=bool(command(["ip","-"+str(af),"route","show","table",table]).stdout.strip())
+  if not table_present:changed=True
   if not owned.exists():
-   if command(["ip","-"+str(af),"route","show","table",table]).stdout.strip():raise ValueError("Routing table "+str(table)+" is already used")
+   if table_present:raise ValueError("Routing table "+str(table)+" is already used")
    atomic(owned,{"owned":True})
   command(["ip","-"+str(af),"route","replace","unreachable","default","table",table,"metric","42760"],check=True)
   if not x["available"]:
    command(["ip","-"+str(af),"route","flush","table",table,"type","unicast"])
    cache=RUN/"rules"/(str(af)+"-"+str(pref)+".json")
-   if cache.exists():delrule(af,pref);cache.unlink()
+   if cache.exists():delrule(af,pref);cache.unlink();changed=True
    continue
   if x["gateway"]:
    command(["ip","-"+str(af),"route","replace","table",table,x["gateway"]+("/128" if af==6 else "/32"),"dev",x["device"],"scope","link"],check=True)
@@ -497,7 +523,8 @@ def install_resources(paths,s):
   route+=["dev",x["device"],"src",x["source"]]
   if x["gateway"]:route+=["onlink"]
   command(route+["metric","10"],check=True)
-  rule(af,pref,["from",x["source"]+("/128" if af==6 else "/32"),"lookup",table],s.get("initialized",False))
+  changed=bool(rule(af,pref,["from",x["source"]+("/128" if af==6 else "/32"),"lookup",table],s.get("initialized",False))) or changed
+ return changed
 def mark_for(p,live):
  path=RUN/"interfaces"/(p["interface"]+".json")
  original=readjson(path)
@@ -508,8 +535,6 @@ def mark_for(p,live):
  return original["mark"]
 def update_guard(states,override=None):
  existing=command(["nft","list","table","inet","wg_uplink"]).returncode==0
- if not existing:
-  command(["nft","-f","-"],stdin="add table inet wg_uplink\nadd chain inet wg_uplink input { type filter hook input priority -21; policy accept; }\nadd chain inet wg_uplink output { type filter hook output priority -21; policy accept; }\n",check=True)
  commands=["flush chain inet wg_uplink input","flush chain inet wg_uplink output"]
  for state in states:
   policy_id=state.get("id")
@@ -528,7 +553,19 @@ def update_guard(states,override=None):
     else:
      commands.append("add rule inet wg_uplink input "+base+" iifname != "+json.dumps(target["device"])+" counter drop")
      commands.append("add rule inet wg_uplink output "+outbase+" oifname != "+json.dumps(target["device"])+" counter drop")
+ # All generated guard rules only drop; stable ordering avoids restart-only rewrites.
+ commands=commands[:2]+sorted(set(commands[2:]))
+ desired=hashlib.sha256("\n".join(commands).encode()).hexdigest()
+ cache=RUN/"guard-applied.json";old=readjson(cache)
+ current=audit.nft_fingerprint(command,"wg_uplink") if existing else None
+ if existing and old.get("desired")==desired and old.get("actual")==current:return False
+ if not existing:
+  commands=["add table inet wg_uplink","add chain inet wg_uplink input { type filter hook input priority -21; policy accept; }","add chain inet wg_uplink output { type filter hook output priority -21; policy accept; }"]+commands
  command(["nft","-f","-"],stdin="\n".join(commands)+"\n",check=True)
+ after={"desired":desired,"actual":audit.nft_fingerprint(command,"wg_uplink")}
+ atomic(cache,after)
+ atomic(RUN/"guard-change.json",{"before":dict(old,observed=current),"after":after,"rules":commands})
+ return True
 def select_route(p,target,mark,s):
  pref=300+int(p["slot"]);af=target["af"];addr=target["ips"][0]
  rule(af,pref,["to",addr+("/128" if af==6 else "/32"),"fwmark",mark,"ipproto","udp","dport",target["port"],"lookup",target["table"]],s.get("initialized",False))
@@ -550,8 +587,9 @@ def verify_inner(p):
    jobs.append((target,lambda src=src,target=target,af=af:ping(src,target,af,5)))
   except (ValueError,KeyError,StopIteration):continue
  return any(x.get("ok") for x in parallel(jobs).values()) if jobs else False
-def apply_path(p,s,target,all_states):
+def apply_path(p,s,target,all_states,trigger=None):
  mark=s["mark"];old=s.get("active")
+ support=audit.evidence(s);old_view=audit.path_view(old or {})
  endpoint=("["+target["ips"][0]+"]" if target["af"]==6 else target["ips"][0])+":"+str(target["port"])
  try:
   update_guard(all_states,(s["id"],target))
@@ -563,7 +601,7 @@ def apply_path(p,s,target,all_states):
   if live.get("endpoint")!=endpoint:raise ValueError("Endpoint roamed during verification")
   proof=command(["ip","-"+str(target["af"]),"route","get",target["ips"][0],"mark",mark,"ipproto","udp","dport",target["port"]],check=True).stdout.strip()
   if "dev "+target["device"]+" " not in proof+" ":raise ValueError("Sticky route verification failed")
- except Exception:
+ except Exception as error:
   if old:
    select_route(p,old,mark,s);update_guard(all_states,(s["id"],old))
    ep=("["+old["ips"][0]+"]" if old["af"]==6 else old["ips"][0])+":"+str(old["port"])
@@ -576,10 +614,11 @@ def apply_path(p,s,target,all_states):
    if s.get("original_endpoint"):
     command(["wg","set",p["interface"],"peer",p["peer_key"],"endpoint",s["original_endpoint"]])
    update_guard(all_states)
+  audit.emit("uplink",trigger or "check_condition_met",{"type":"rollback_switch","interface":p["interface"],"peer":s["id"]},{"before":old_view,"attempted":audit.path_view(target),"after":old_view,"error":str(error),"support":support})
   raise
  s.update(selected=target["id"],active=target,endpoint=endpoint,route_proof=proof,last_switch=time.time(),initialized=True)
  s.pop("failure_since",None);s.pop("recovery_since",None);s["timer"]=None
- print("WG Uplink "+p["interface"]+" selected "+target["role"]+" IPv"+str(target["af"]),file=sys.stderr)
+ audit.emit("uplink",trigger or ("check_condition_met" if old_view.get("id")!=target["id"] else "interface_detail_update_observed"),{"type":"switch_path" if old_view.get("id")!=target["id"] else "refresh_selected_path","interface":p["interface"],"peer":s["id"]},{"before":old_view,"after":audit.path_view(target),"route_proof":proof,"support":support})
 def cleanup_policy(p,s,remaining):
  slot=int(s.get("slot",p.get("slot",0)))
  if not slot:return
@@ -609,7 +648,7 @@ def initialize_state(p,state,live,paths):
   match=re.search(r"\bdev\s+(\S+)",route)
   current=next((x for x in paths if current_ip in x["ips"] and match and x.get("device")==match[1]),None)
  return dict(state,id=p["id"],slot=int(p["slot"]),interface=p["interface"],peer_key=p["peer_key"],original_endpoint=live["endpoint"],selected=current["id"] if current else None)
-def tick(force=False):
+def tick(force=False,trigger="check_condition_met"):
  RUN.mkdir(parents=True,exist_ok=True)
  with open(LOCK,"w") as lock:
   try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -623,7 +662,9 @@ def tick(force=False):
   for key,s in list(states.items()):
    if key not in enabled:
     cleanup_policy({},s,[v for k,v in states.items() if k in enabled and k!=key]);states.pop(key)
-  update_guard(list(states.values()))
+    audit.emit("uplink","change_settings",{"type":"remove_peer_policy","interface":s.get("interface"),"peer":key},{"before":audit.path_view(s.get("active") or {}),"after":None})
+  if update_guard(list(states.values())):
+   audit.emit("uplink",trigger,{"type":"reconcile_firewall"},dict(readjson(RUN/"guard-change.json"),support=[audit.evidence(s) for s in states.values()]))
   for ident,p in enabled.items():
    p["id"]=ident;p["_interval"]=interval
    state=states.get(ident,{})
@@ -640,8 +681,12 @@ def tick(force=False):
     if not live:raise ValueError("WireGuard interface is not running")
     paths=paths_for(p,peer,d)
     state=initialize_state(p,state,live,paths)
+    before_resources=audit.paths_view(state.get("paths",[]))
     state.update(mark=mark_for(p,live),listen_port=live["listen_port"],paths=paths)
-    install_resources(paths,state)
+    repaired=install_resources(paths,state)
+    after_resources=audit.paths_view(paths)
+    if before_resources!=after_resources or repaired:
+     audit.emit("uplink",trigger if trigger=="start_service" else "interface_detail_update_observed",{"type":"refresh_routes","interface":p["interface"],"peer":ident},{"before":before_resources,"after":after_resources,"restored_missing_resources":bool(repaired)})
     observed=parallel([(x["id"],lambda x=x:check_path(x,p)) for x in paths])
     results=[observed[x["id"]] for x in paths]
     if any("failed" not in x for x in results):raise ValueError("Health check could not complete")
@@ -661,7 +706,7 @@ def tick(force=False):
      wanted=("["+target["ips"][0]+"]" if target["af"]==6 else target["ips"][0])+":"+str(target["port"])
      # Always pin the selected peer, including initial adoption.
      if not state.get("initialized") or desired or not same or live.get("endpoint")!=wanted or live.get("mark")!=state["mark"]:
-      apply_path(p,state,target,list(states.values()))
+      apply_path(p,state,target,list(states.values()),trigger="start_service" if trigger=="start_service" else ("check_condition_met" if desired else "interface_detail_update_observed"))
      else:
       select_route(p,target,state["mark"],state)
       state["active"]=target
@@ -677,7 +722,8 @@ def tick(force=False):
    if not hist or time.time()-hist[-1].get("time",0)>=55:
     hist.append({"time":time.time(),"selected":state.get("selected"),"reason":state.get("reason"),"paths":[{"id":x.get("id"),"failed":x.get("failed"),"checks":x.get("checks",{})} for x in state.get("paths",[])]})
     atomic(hp,hist[-2880:])
-  update_guard(list(states.values()))
+  if update_guard(list(states.values())):
+   audit.emit("uplink",trigger,{"type":"reconcile_firewall"},{"interfaces":[s.get("interface") for s in states.values()]})
   return {"ok":True,"policies":len(enabled)}
 def status():
  d=inventory();ps=policies(d);by={id_for(p["interface"],p["peer_key"]):p for p in ps}
@@ -698,9 +744,10 @@ def status():
  uplinks=[dict(x,device=runtime.get(x["name"],{}).get("l3_device",""),up=runtime.get(x["name"],{}).get("up",False),family_children={str(af):[r["interface"] for r in family_rows(x["name"],af,d)[1] if r["interface"]==x["name"]+"_"+str(af) or (next((c.get("device","") for c in d["interfaces"] if c["name"]==r["interface"]),"")=="@"+x["name"])] for af in (4,6)}) for x in d["interfaces"] if x["proto"]!="wireguard" and x["name"]!="loopback"]
  return {"ok":True,"version":VERSION,"interfaces":cards,"uplinks":uplinks,"receiver":receiver_status(),"settings":{"interval":int(d["settings"].get("interval",10))}}
 def daemon():
+ first=True
  while True:
   start=time.monotonic()
-  try:tick()
+  try:tick(force=first,trigger="start_service" if first else "check_condition_met");first=False
   except Exception as e:print("WG Uplink: "+str(e),file=sys.stderr)
   try:interval=int(inventory()["settings"].get("interval",10))
   except Exception:interval=10
@@ -710,6 +757,7 @@ def main():
  action=sys.argv[1] if len(sys.argv)>1 else "status"
  try:
   if action=="status":out=status()
+  elif action=="logs":out=action_logs()
   elif action=="save":
    raw=sys.argv[2] if len(sys.argv)>2 else sys.stdin.read(16385)
    if len(raw)>16384:raise ValueError("Request too large")

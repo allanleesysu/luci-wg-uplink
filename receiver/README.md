@@ -54,6 +54,12 @@ The status associates marked UDP flows with WireGuard's authenticated learned en
 
 The module does not accept firewall traffic, open WAN ports, change NAT, or configure remote peers. Existing firewall/port-forwarding rules must already allow the intended WG listener.
 
+## Persistent action log
+
+The standalone service writes /etc/wg-sticky-receiver/actions.jsonl, with two rotations and a 1 MiB limit per file. Journals are persistent and preserved during system upgrades. Read them using wg-sticky-receiver logs, or the full app's Show log popup. No LuCI dependency is introduced.
+
+Only actual settings writes, route/firewall reconciliation, repair and cleanup are recorded, with before/after values. Unchanged discovery and kernel per-packet learning are silent.
+
 ## Migration and removal
 
 Retire any older sticky route watcher only after verifying the new live pins and return paths. Do not leave independent writers managing the same receiver.

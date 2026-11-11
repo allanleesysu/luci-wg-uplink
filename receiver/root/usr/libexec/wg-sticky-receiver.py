@@ -2,6 +2,8 @@
 """Standalone WG receiver sticky replies. No LuCI or uplink-selector dependency."""
 import os,sys,json,time,re,subprocess,fcntl,ipaddress,shlex,hashlib,importlib.util
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import wg_sticky_actions as audit
 RUN=Path("/var/run/wg-sticky-receiver")
 BASE=Path(__file__).resolve().parent
 LOCK="/var/lock/wg-sticky-receiver.lock"
@@ -92,10 +94,11 @@ def rule(af,pref,args,known):
  cache=RUN/"rules"/(str(af)+"-"+str(pref)+".json")
  old=readjson(cache)
  if lines and not old:raise ValueError("Routing priority "+str(pref)+" is already used")
- if old.get("args")==sig and lines:return
+ if old.get("args")==sig and lines:return False
  delrule(af,pref)
  command(["ip","-"+str(af),"rule","add","pref",pref]+sig,check=True)
  atomic(cache,{"args":sig})
+ return True
 
 def policies(d):return []
 def inventory():
@@ -184,23 +187,28 @@ def configure(data):
   role,sep,ip=item.partition("=")
   if not sep or role not in names:raise ValueError("Use interface=IP for gateway overrides")
   ipaddress.ip_address(ip)
+ before={"enabled":str(s["receiver_enabled"]),"uplinks":s["receiver_uplinks"],"gateways":s["receiver_gateways"],"interval":int(s["interval"])}
+ after={"enabled":enabled,"uplinks":uplinks,"gateways":gateways,"interval":interval}
+ changes=audit.diff(before,after)
+ if not changes:return {"ok":True,"message":"Settings unchanged."}
  text="config receiver 'main'\n\toption enabled '"+enabled+"'\n\toption interval '"+str(interval)+"'\n"
  for k,items in (("uplinks",uplinks),("gateways",gateways)):
   for item in items:text+="\tlist "+k+" "+shlex.quote(item)+"\n"
  conf=Path("/etc/config/wg_sticky");tmp=conf.with_name("wg_sticky.new")
  tmp.write_text(text);tmp.chmod(0o600);os.replace(tmp,conf)
  command(["uci","-q","revert","wg_sticky"])
+ audit.emit("receiver","change_settings",{"type":"update_settings"},{"changes":changes})
  if enabled=="1":
   command(["/etc/init.d/wg-sticky-receiver","enable"])
   if command(["/etc/init.d/wg-sticky-receiver","status"]).returncode:command(["/etc/init.d/wg-sticky-receiver","start"])
  subprocess.Popen(["/usr/sbin/wg-sticky-receiver","tick"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
  return {"ok":True,"message":"Saved; receiver state updates independently."}
-def tick():
+def tick(trigger="interface_detail_update_observed"):
  RUN.mkdir(parents=True,exist_ok=True)
  with open(LOCK,"w") as lock:
   try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
   except BlockingIOError:return {"ok":True,"busy":True}
-  d=inventory();m=core()
+  d=inventory();m=core();sys.modules[__name__].action_trigger=trigger
   try:r=m.sync(sys.modules[__name__],d,configured_outbound(d) if str(d["settings"]["receiver_enabled"])=="1" else [])
   except Exception as e:
    r={"enabled":str(d["settings"]["receiver_enabled"])=="1","active":False,"error":str(e)}
@@ -211,6 +219,7 @@ def main():
  action=sys.argv[1] if len(sys.argv)>1 else "status"
  try:
   if action=="status":out=status()
+  elif action=="logs":out={"ok":True,"entries":audit.read("receiver")}
   elif action=="configure":
    raw=sys.argv[2] if len(sys.argv)>2 else sys.stdin.read(16385)
    if len(raw)>16384:raise ValueError("Request too large")
@@ -223,9 +232,10 @@ def main():
    ports=[int(x.split()[1]) for x in command(["wg","show","all","listen-port"]).stdout.splitlines() if len(x.split())>1 and int(x.split()[1])>0]
    print("\n".join(m.build_rules(us,ports,configured_outbound(d))));return
   elif action=="daemon":
+   first=True
    while True:
     start=time.monotonic()
-    try:tick()
+    try:tick(trigger="start_service" if first else "interface_detail_update_observed");first=False
     except Exception as e:print("WG sticky receiver: "+str(e),file=sys.stderr)
     try:interval=int(inventory()["settings"]["interval"])
     except Exception:interval=10

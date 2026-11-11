@@ -4,7 +4,8 @@
     "read": {
       "ubus": {
         "luci.wg_uplink": [
-          "status"
+          "status",
+          "logs"
         ]
       }
     },

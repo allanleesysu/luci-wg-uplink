@@ -4,6 +4,7 @@
 'require ui';
 'require poll';
 
+var getLogs=rpc.declare({object:'luci.wg_uplink',method:'logs',expect:{'':{}}});
 var getStatus=rpc.declare({object:'luci.wg_uplink',method:'status',expect:{'':{}}});
 var savePolicy=rpc.declare({object:'luci.wg_uplink',method:'save',params:['data'],expect:{'':{}}});
 var checkNow=rpc.declare({object:'luci.wg_uplink',method:'check',expect:{'':{}}});
@@ -32,6 +33,37 @@ function select(v,options){
 }
 function checkbox(v){var n=E('input',{type:'checkbox'});n.checked=String(v)==='1';return n;}
 function textarea(v){return E('textarea',{'class':'cbi-input-textarea',rows:2,style:'width:100%'},Array.isArray(v)?v.join('\n'):String(v||''));}
+function showActionLogs(){
+ var container=E('div',{},_('Loading…'));
+ var refresh=E('button',{'class':'btn',click:load},_('Refresh'));
+ function load(){
+  refresh.disabled=true;
+  return getLogs().then(success).then(function(result){
+   while(container.firstChild)container.removeChild(container.firstChild);
+   if(!(result.entries||[]).length){container.appendChild(E('p',{},_('No recorded changes yet. Checks with no applied change are not logged.')));return;}
+   container.appendChild(E('div',{style:'max-height:65vh;overflow:auto'},[
+    E('table',{'class':'table'},[
+     E('tr',{'class':'tr table-titles'},[_('Date / time / timezone'),_('Scope'),_('Trigger'),_('Action'),_('Data')].map(function(x){return E('th',{'class':'th'},x);}))
+    ].concat(result.entries.map(function(entry){
+     var action=entry.action||{};
+     return E('tr',{'class':'tr'},[
+      E('td',{'class':'td'},[E('span',{},entry.date+' '+entry.time),E('br'),E('small',{},entry.timezone+' (UTC'+entry.utc_offset+')')]),
+      E('td',{'class':'td'},entry.scope),
+      E('td',{'class':'td'},entry.trigger),
+      E('td',{'class':'td'},[E('strong',{},action.type||''),E('br'),E('small',{},action.interface||''),E('details',{},[E('summary',{},_('Details')),E('pre',{style:'white-space:pre-wrap;max-width:30em'},JSON.stringify(action,null,2))])]),
+      E('td',{'class':'td'},E('details',{},[E('summary',{},_('Checks / before / after')),E('pre',{style:'white-space:pre-wrap;max-width:45em'},JSON.stringify(entry.data||{},null,2))]))
+     ]);
+    })))
+   ]));
+  }).catch(function(e){notify(e);}).finally(function(){refresh.disabled=false;});
+ }
+ ui.showModal(_('WG Uplink — Action log'),[
+  E('p',{},_('Latest applied changes, newest first. Logs persist across reboot; routine checks and unchanged settings are omitted.')),
+  container,
+  E('div',{'class':'right',style:'margin-top:1em'},[refresh,' ',E('button',{'class':'btn',click:ui.hideModal},_('Close'))])
+ ]);
+ return load();
+}
 function editPeer(peer,data,refresh){
  var p=Object.assign({},peer.policy),controls={},panels=[],buttons=[];
  var tabs=E('div',{'class':'cbi-tabmenu',style:'display:flex;gap:.5em;flex-wrap:wrap;margin-bottom:1em'});
@@ -229,7 +261,7 @@ return view.extend({
    E('button',{'class':'btn',click:function(){outbound.style.display='none';receiver.style.display='';}},_('Receiver'))
   ]);
   return E('div',{},[
-   E('h2',{},_('WG Uplink')),
+   E('div',{style:'display:flex;justify-content:space-between;align-items:center;gap:1em;margin-bottom:1em'},[E('h2',{style:'margin:0'},_('WG Uplink')),E('button',{'class':'btn',click:showActionLogs},_('Show log'))]),
    E('p',{},_('Choose preferred and fallback uplinks for outbound WireGuard peers. Sticky routing is enforced in both directions. Peers without a configured endpoint are listed for reference and are not changed.')),
    tabs,outbound,receiver
   ]);

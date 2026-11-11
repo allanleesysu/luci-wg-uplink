@@ -125,6 +125,30 @@ Disabling a policy removes its owned rules/tables and restores its original endp
 
 After an OS/ABI upgrade, reinstall matching runtime dependencies if needed. RAM history/timers reset on reboot.
 
+## Persistent action log
+
+Click **Show log** at the far right of the WG Uplink title. The popup combines uplink and receiver entries, newest first, with Refresh and expandable action/data fields. The read-only logs RPC uses the same LuCI read ACL as status.
+
+Each JSONL entry contains timestamp, date, time, timezone and UTC offset; scope (uplink/receiver); trigger; action; and data. Data includes check results and observation timing for a switch, before/after values for settings and interface resources, or attempted/restored paths for a rollback.
+
+Persistent journals:
+
+- /etc/wg-uplink/actions.jsonl
+- /etc/wg-sticky-receiver/actions.jsonl
+
+Each scope keeps the active file plus .1 and .2 rotations, up to approximately 1 MiB per file. Entries larger than 128 KiB retain a marked preview. Files are root-only and synced after append. Both installers and package keep.d lists preserve the journal directories during system upgrades.
+
+Only changes are recorded: applied path changes, rollback, source/device/gateway/availability refreshes, nftables repair/reconciliation, owned-resource cleanup, and actual settings writes through the app. Identical saves and routine healthy/unhealthy probes without an applied change are silent. Packet counters and peer enumeration order do not cause a firewall rewrite or log entry.
+
+Service startup is the trigger when it actually applies/repairs resources. Existing service-stop behavior retains installed networking, so stopping an already configured monitor alone does not create a network-action entry. Disable policies/receiver to perform and log cleanup before removal. Kernel per-packet receiver learning is not a traffic journal.
+
+CLI:
+
+    wg-uplink logs
+    wg-sticky-receiver logs
+
+Logging failures are reported on stderr without making a working tunnel fail. Historical minute-by-minute probe samples remain separately in RAM.
+
 ## Tests
 
 Backend tests without real network changes:
@@ -135,6 +159,7 @@ Receiver tests:
 
     python3 tests/test_receiver.py
     python3 tests/test_family.py
+    python3 tests/test_actions.py
 
 Render and form serialization fixture (Node.js on a development machine):
 
