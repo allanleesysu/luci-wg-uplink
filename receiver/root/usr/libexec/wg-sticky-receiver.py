@@ -17,44 +17,72 @@ def atomic(path,data):
 def readjson(path,default=None):
  try:return json.loads(Path(path).read_text())
  except (OSError,ValueError):return {} if default is None else default
-def resource(role,af,override,d):
+def family_rows(role,af,d):
+ """Prefer netifd's family child, then configured @parent aliases and the parent."""
  rt=d["runtime"];base=next((x for x in rt if x["interface"]==role),{})
  dev=base.get("l3_device") or base.get("device")
- siblings=[x for x in rt if x["interface"]==role or (dev and (x.get("l3_device")==dev or x.get("device")==dev))]
- if not base.get("up") or not dev:return {"available":False,"error":"Uplink is down","role":role,"af":af,"device":dev or ""}
- candidates=[]
- for x in siblings:
-  for a in x.get("ipv"+str(af)+"-address",[]):
+ aliases={x["name"] for x in d["interfaces"] if (x.get("device") or x.get("ifname"))=="@"+role and (x.get("proto") not in ("dhcp","dhcpv6") or x.get("proto")==("dhcp" if af==4 else "dhcpv6"))}
+ names=[role+"_"+str(af)]+sorted(aliases)+[role]
+ out=[]
+ for name in names:
+  row=next((x for x in rt if x["interface"]==name),None)
+  if row and row not in out:out.append(row)
+ for row in rt:
+  if dev and row.get("l3_device")==dev and row not in out:out.append(row)
+ return base,out
+
+def resource(role,af,override,d):
+ base,rows=family_rows(role,af,d)
+ common={"available":False,"role":role,"af":af,"device":base.get("l3_device") or base.get("device") or "","logical_interface":role}
+ if not base.get("up"):return dict(common,error="Uplink is down")
+ child=next((x for x in rows if x["interface"]==role+"_"+str(af)),None)
+ # Do not borrow stale kernel addresses from a stopped family child.
+ if child and not child.get("up") and not base.get("ipv"+str(af)+"-address"):
+  return dict(common,logical_interface=child["interface"],error="IPv"+str(af)+" child is down")
+ seen=set()
+ for row in rows:
+  if not row.get("up"):continue
+  dev=row.get("l3_device") or row.get("device")
+  if not dev or dev.startswith("@") or dev in seen:continue
+  seen.add(dev)
+  siblings=[row]+[x for x in rows if x is not row and x.get("up") and (x.get("l3_device") or x.get("device"))==dev]
+  candidates=[]
+  for x in siblings:
+   for a in x.get("ipv"+str(af)+"-address",[]):
+    try:
+     ip=ipaddress.ip_address(a["address"])
+     if ip.version==af and (af==4 or ip.is_global) and a.get("preferred",1)!=0:candidates.append((str(ip),x["interface"]))
+    except ValueError:pass
+  if not candidates:
    try:
-    ip=ipaddress.ip_address(a["address"])
-    if af==4 or (ip.is_global and a.get("preferred",1)!=0):candidates.append(str(ip))
-   except ValueError:pass
- if not candidates:
-  try:
-   for x in json.loads(command(["ip","-j","-"+str(af),"addr","show","dev",dev],check=True).stdout):
-    for a in x.get("addr_info",[]):
-     ip=ipaddress.ip_address(a["local"])
-     if ip.version==af and (af==4 or ip.is_global) and a.get("preferred_life_time",1)!=0:candidates.append(str(ip))
-  except (ValueError,KeyError):pass
- src=next(iter(candidates),"")
- gw=override
- if not gw:
+    for x in json.loads(command(["ip","-j","-"+str(af),"addr","show","dev",dev],check=True).stdout):
+     for a in x.get("addr_info",[]):
+      ip=ipaddress.ip_address(a["local"])
+      if ip.version==af and (af==4 or ip.is_global) and a.get("preferred_life_time",1)!=0:candidates.append((str(ip),row["interface"]))
+   except (ValueError,KeyError):pass
+  source,logical=next(iter(candidates),("",row["interface"]))
+  gw=override;direct=False
   for x in siblings:
    for r in x.get("route",[]):
     if r.get("mask")==0 and r.get("target") in (("0.0.0.0",) if af==4 else ("::",)):
-     gw=r.get("nexthop","")
-     if gw:break
-   if gw:break
- if not gw:
-  c=next((x for x in d["interfaces"] if x["name"]==role),{})
-  gw=c.get("gateway" if af==4 else "ip6gw","")
- if not gw:
-  try:
-   for r in json.loads(command(["ip","-j","-"+str(af),"route","show","default","dev",dev]).stdout):
-    if r.get("gateway"):gw=r["gateway"];break
-  except ValueError:pass
- if not src or not gw:return {"available":False,"role":role,"af":af,"device":dev,"error":"No native IPv"+str(af)+" address or gateway; a gateway override may be needed"}
- return {"available":True,"role":role,"af":af,"device":dev,"source":src,"gateway":gw}
+     hop=r.get("nexthop","")
+     if not gw and hop not in ("","0.0.0.0","::"):gw=hop
+     direct=True
+  conf=next((x for x in d["interfaces"] if x["name"]==role),{})
+  if not gw:gw=conf.get("gateway" if af==4 else "ip6gw","")
+  if not gw:
+   try:
+    for r in json.loads(command(["ip","-j","-"+str(af),"route","show","default","dev",dev]).stdout):
+     if r.get("gateway"):gw=r["gateway"];break
+     direct=True
+   except ValueError:pass
+  if gw in ("0.0.0.0","::"):gw=""
+  ppp=base.get("proto") in ("ppp","pppoe","pppoa","pptp","l2tp") or dev.startswith("ppp")
+  point_to_point=not gw and direct and ppp
+  common.update(device=dev,logical_interface=logical)
+  if source and (gw or point_to_point):
+   return dict(common,available=True,source=source,gateway=gw,point_to_point=point_to_point)
+ return dict(common,error="No native IPv"+str(af)+" address or default route; a gateway override may be needed")
 def delrule(af,pref):
  for _ in range(8):
   if command(["ip","-"+str(af),"rule","del","pref",pref]).returncode:break

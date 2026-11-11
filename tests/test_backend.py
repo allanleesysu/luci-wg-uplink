@@ -23,6 +23,10 @@ check(w.validate(valid,d)["preferred"]=="wan1","valid outbound policy")
 invalid(dict(valid,peer_key="inbound"),d,"inbound-only peer cannot be managed")
 invalid(dict(valid,fallback="wan1"),d,"same uplink rejected")
 invalid(dict(valid,fallback="wan1_6"),d,"same device via alias rejected")
+alias=copy.deepcopy(d)
+alias["interfaces"][2]["device"]="@wan1"
+alias["runtime"][2]["l3_device"]="separate-v6-device"
+invalid(dict(valid,fallback="wan1_6"),alias,"same provider through differently named alias devices rejected")
 invalid(dict(valid,endpoint4="example.com;bad"),d,"hostname command injection rejected")
 invalid(dict(valid,observe_seconds="0"),d,"zero observation window rejected")
 invalid(dict(valid,fo_ping_loss="NaN"),d,"NaN threshold rejected")

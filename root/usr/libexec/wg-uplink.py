@@ -2,7 +2,7 @@
 """WG Uplink: source-pinned health checks and per-peer WireGuard uplink policy."""
 import os,sys,json,time,re,socket,struct,subprocess,fcntl,ipaddress,hashlib,threading,queue,shutil,shlex
 from pathlib import Path
-VERSION="1.0.1"
+VERSION="1.0.2"
 RUN=Path("/var/run/wg-uplink")
 PERSIST=Path("/etc/wg-uplink")
 DISCOVER="/usr/libexec/wg-uplink-discover.uc"
@@ -66,6 +66,16 @@ def validate(data,d):
  for k in ("preferred","fallback"):
   if str(p["enabled"])=="1" and p[k] not in names:raise ValueError("Select a configured "+k+" uplink")
  if str(p["enabled"])=="1" and p["preferred"]==p["fallback"]:raise ValueError("Preferred and fallback uplinks must differ")
+ def root(role):
+  visited=set()
+  while role not in visited:
+   visited.add(role)
+   conf=next((x for x in d["interfaces"] if x["name"]==role),{})
+   link=conf.get("device") or conf.get("ifname") or ""
+   if not link.startswith("@"):break
+   role=link[1:]
+  return role
+ if str(p["enabled"])=="1" and root(p["preferred"])==root(p["fallback"]):raise ValueError("Preferred and fallback aliases belong to the same parent uplink")
  rt={x["interface"]:x for x in d.get("runtime",[])}
  a=rt.get(p["preferred"],{}).get("l3_device");b=rt.get(p["fallback"],{}).get("l3_device")
  if str(p["enabled"])=="1" and a and a==b:raise ValueError("Select two different uplink devices, not two aliases of the same uplink")
@@ -205,44 +215,72 @@ def endpoint_tuple(endpoint):
  if ":" in endpoint:
   a,port=endpoint.rsplit(":",1);return a,int(port)
  return "",0
-def resource(role,af,override,d):
+def family_rows(role,af,d):
+ """Prefer netifd's family child, then configured @parent aliases and the parent."""
  rt=d["runtime"];base=next((x for x in rt if x["interface"]==role),{})
  dev=base.get("l3_device") or base.get("device")
- siblings=[x for x in rt if x["interface"]==role or (dev and (x.get("l3_device")==dev or x.get("device")==dev))]
- if not base.get("up") or not dev:return {"available":False,"error":"Uplink is down","role":role,"af":af,"device":dev or ""}
- candidates=[]
- for x in siblings:
-  for a in x.get("ipv"+str(af)+"-address",[]):
+ aliases={x["name"] for x in d["interfaces"] if (x.get("device") or x.get("ifname"))=="@"+role and (x.get("proto") not in ("dhcp","dhcpv6") or x.get("proto")==("dhcp" if af==4 else "dhcpv6"))}
+ names=[role+"_"+str(af)]+sorted(aliases)+[role]
+ out=[]
+ for name in names:
+  row=next((x for x in rt if x["interface"]==name),None)
+  if row and row not in out:out.append(row)
+ for row in rt:
+  if dev and row.get("l3_device")==dev and row not in out:out.append(row)
+ return base,out
+
+def resource(role,af,override,d):
+ base,rows=family_rows(role,af,d)
+ common={"available":False,"role":role,"af":af,"device":base.get("l3_device") or base.get("device") or "","logical_interface":role}
+ if not base.get("up"):return dict(common,error="Uplink is down")
+ child=next((x for x in rows if x["interface"]==role+"_"+str(af)),None)
+ # Do not borrow stale kernel addresses from a stopped family child.
+ if child and not child.get("up") and not base.get("ipv"+str(af)+"-address"):
+  return dict(common,logical_interface=child["interface"],error="IPv"+str(af)+" child is down")
+ seen=set()
+ for row in rows:
+  if not row.get("up"):continue
+  dev=row.get("l3_device") or row.get("device")
+  if not dev or dev.startswith("@") or dev in seen:continue
+  seen.add(dev)
+  siblings=[row]+[x for x in rows if x is not row and x.get("up") and (x.get("l3_device") or x.get("device"))==dev]
+  candidates=[]
+  for x in siblings:
+   for a in x.get("ipv"+str(af)+"-address",[]):
+    try:
+     ip=ipaddress.ip_address(a["address"])
+     if ip.version==af and (af==4 or ip.is_global) and a.get("preferred",1)!=0:candidates.append((str(ip),x["interface"]))
+    except ValueError:pass
+  if not candidates:
    try:
-    ip=ipaddress.ip_address(a["address"])
-    if af==4 or (ip.is_global and a.get("preferred",1)!=0):candidates.append(str(ip))
-   except ValueError:pass
- if not candidates:
-  try:
-   for x in json.loads(command(["ip","-j","-"+str(af),"addr","show","dev",dev],check=True).stdout):
-    for a in x.get("addr_info",[]):
-     ip=ipaddress.ip_address(a["local"])
-     if ip.version==af and (af==4 or ip.is_global) and a.get("preferred_life_time",1)!=0:candidates.append(str(ip))
-  except (ValueError,KeyError):pass
- src=next(iter(candidates),"")
- gw=override
- if not gw:
+    for x in json.loads(command(["ip","-j","-"+str(af),"addr","show","dev",dev],check=True).stdout):
+     for a in x.get("addr_info",[]):
+      ip=ipaddress.ip_address(a["local"])
+      if ip.version==af and (af==4 or ip.is_global) and a.get("preferred_life_time",1)!=0:candidates.append((str(ip),row["interface"]))
+   except (ValueError,KeyError):pass
+  source,logical=next(iter(candidates),("",row["interface"]))
+  gw=override;direct=False
   for x in siblings:
    for r in x.get("route",[]):
     if r.get("mask")==0 and r.get("target") in (("0.0.0.0",) if af==4 else ("::",)):
-     gw=r.get("nexthop","")
-     if gw:break
-   if gw:break
- if not gw:
-  c=next((x for x in d["interfaces"] if x["name"]==role),{})
-  gw=c.get("gateway" if af==4 else "ip6gw","")
- if not gw:
-  try:
-   for r in json.loads(command(["ip","-j","-"+str(af),"route","show","default","dev",dev]).stdout):
-    if r.get("gateway"):gw=r["gateway"];break
-  except ValueError:pass
- if not src or not gw:return {"available":False,"role":role,"af":af,"device":dev,"error":"No native IPv"+str(af)+" address or gateway; a gateway override may be needed"}
- return {"available":True,"role":role,"af":af,"device":dev,"source":src,"gateway":gw}
+     hop=r.get("nexthop","")
+     if not gw and hop not in ("","0.0.0.0","::"):gw=hop
+     direct=True
+  conf=next((x for x in d["interfaces"] if x["name"]==role),{})
+  if not gw:gw=conf.get("gateway" if af==4 else "ip6gw","")
+  if not gw:
+   try:
+    for r in json.loads(command(["ip","-j","-"+str(af),"route","show","default","dev",dev]).stdout):
+     if r.get("gateway"):gw=r["gateway"];break
+     direct=True
+   except ValueError:pass
+  if gw in ("0.0.0.0","::"):gw=""
+  ppp=base.get("proto") in ("ppp","pppoe","pppoa","pptp","l2tp") or dev.startswith("ppp")
+  point_to_point=not gw and direct and ppp
+  common.update(device=dev,logical_interface=logical)
+  if source and (gw or point_to_point):
+   return dict(common,available=True,source=source,gateway=gw,point_to_point=point_to_point)
+ return dict(common,error="No native IPv"+str(af)+" address or default route; a gateway override may be needed")
 def paths_for(p,peer,d):
  out=[]
  slot=int(p["slot"])
@@ -440,6 +478,8 @@ def rule(af,pref,args,known):
 def install_resources(paths,s):
  for x in paths:
   af=x["af"];table=x["table"];pref=x["pref"]
+  opposite=RUN/"rules"/(str(10-af)+"-"+str(pref)+".json")
+  if opposite.exists():delrule(10-af,pref);opposite.unlink()
   owned=RUN/"tables"/(str(af)+"-"+str(table)+".json")
   if not owned.exists():
    if command(["ip","-"+str(af),"route","show","table",table]).stdout.strip():raise ValueError("Routing table "+str(table)+" is already used")
@@ -447,9 +487,16 @@ def install_resources(paths,s):
   command(["ip","-"+str(af),"route","replace","unreachable","default","table",table,"metric","42760"],check=True)
   if not x["available"]:
    command(["ip","-"+str(af),"route","flush","table",table,"type","unicast"])
+   cache=RUN/"rules"/(str(af)+"-"+str(pref)+".json")
+   if cache.exists():delrule(af,pref);cache.unlink()
    continue
-  command(["ip","-"+str(af),"route","replace","table",table,x["gateway"]+("/128" if af==6 else "/32"),"dev",x["device"],"scope","link"],check=True)
-  command(["ip","-"+str(af),"route","replace","table",table,"default","via",x["gateway"],"dev",x["device"],"src",x["source"],"onlink","metric","10"],check=True)
+  if x["gateway"]:
+   command(["ip","-"+str(af),"route","replace","table",table,x["gateway"]+("/128" if af==6 else "/32"),"dev",x["device"],"scope","link"],check=True)
+  route=["ip","-"+str(af),"route","replace","table",table,"default"]
+  if x["gateway"]:route+=["via",x["gateway"]]
+  route+=["dev",x["device"],"src",x["source"]]
+  if x["gateway"]:route+=["onlink"]
+  command(route+["metric","10"],check=True)
   rule(af,pref,["from",x["source"]+("/128" if af==6 else "/32"),"lookup",table],s.get("initialized",False))
 def mark_for(p,live):
  path=RUN/"interfaces"/(p["interface"]+".json")
@@ -648,7 +695,7 @@ def status():
  for name in runtime_names:
   if not any(x["name"]==name for x in cards):cards.append({"name":name,"proto":"wireguard","peers":[],"runtime_only":True})
  runtime={x["interface"]:x for x in d["runtime"]}
- uplinks=[dict(x,device=runtime.get(x["name"],{}).get("l3_device",""),up=runtime.get(x["name"],{}).get("up",False)) for x in d["interfaces"] if x["proto"]!="wireguard" and x["name"]!="loopback"]
+ uplinks=[dict(x,device=runtime.get(x["name"],{}).get("l3_device",""),up=runtime.get(x["name"],{}).get("up",False),family_children={str(af):[r["interface"] for r in family_rows(x["name"],af,d)[1] if r["interface"]==x["name"]+"_"+str(af) or (next((c.get("device","") for c in d["interfaces"] if c["name"]==r["interface"]),"")=="@"+x["name"])] for af in (4,6)}) for x in d["interfaces"] if x["proto"]!="wireguard" and x["name"]!="loopback"]
  return {"ok":True,"version":VERSION,"interfaces":cards,"uplinks":uplinks,"receiver":receiver_status(),"settings":{"interval":int(d["settings"].get("interval",10))}}
 def daemon():
  while True:

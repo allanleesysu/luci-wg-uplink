@@ -110,8 +110,13 @@ def sync(w,d,states):
    w.command(["ip","-"+str(af),"route","replace","unreachable","default","table",table,"metric","42760"],check=True)
    path=next((p for u in uplinks if u["slot"]==slot for p in u["paths"] if p["af"]==af and p["available"]),None)
    if path:
-    w.command(["ip","-"+str(af),"route","replace","table",table,path["gateway"]+("/128" if af==6 else "/32"),"dev",path["device"],"scope","link"],check=True)
-    w.command(["ip","-"+str(af),"route","replace","table",table,"default","via",path["gateway"],"dev",path["device"],"src",path["source"],"onlink","metric","10"],check=True)
+    if path["gateway"]:
+     w.command(["ip","-"+str(af),"route","replace","table",table,path["gateway"]+("/128" if af==6 else "/32"),"dev",path["device"],"scope","link"],check=True)
+    route=["ip","-"+str(af),"route","replace","table",table,"default"]
+    if path["gateway"]:route+=["via",path["gateway"]]
+    route+=["dev",path["device"],"src",path["source"]]
+    if path["gateway"]:route+=["onlink"]
+    w.command(route+["metric","10"],check=True)
    else:w.command(["ip","-"+str(af),"route","flush","table",table,"type","unicast"])
    w.rule(af,pref,["fwmark",hex(slot<<24)+"/"+hex(MASK),"lookup",table],pref in owned.get("priorities",[]))
  batch=[]

@@ -47,13 +47,13 @@ function editPeer(peer,data,refresh){
   var n=type==='flag'?checkbox(p[key]):type==='list'?textarea(p[key]):type==='select'?select(p[key],options):input(p[key],type==='number'?'number':'text');
   controls[key]=n;panel.appendChild(row(label,n,help));return n;
  }
- var uplinks=data.uplinks.map(function(x){return [x.name,x.name+(x.description?' — '+x.description:'')+(x.device?' · '+x.device:'')+(x.up?'':' · '+_('down'))];});
+ var uplinks=data.uplinks.map(function(x){var children=x.family_children||{},detail=[4,6].map(function(af){return (children[af]||[]).length?'IPv'+af+': '+children[af].join(', '):'';}).filter(Boolean).join(' / ');return [x.name,x.name+(detail?' · '+detail:'')+(x.description?' — '+x.description:'')+(x.device?' · '+x.device:'')+(x.up?'':' · '+_('down'))];});
  var general=tab(_('Connection'));
  general.appendChild(E('p',{},_('WG packets are pinned to the selected uplink in both directions. The remote peer is assumed to use one uplink or already maintain a sticky return path. A change is applied after the configured observation window.')));
  add(general,'enabled',_('Manage this peer'),'flag');
  add(general,'label',_('Name'),'text');
  add(general,'preferred',_('Preferred uplink'),'select',null,uplinks);
- add(general,'preferred_family',_('Preferred protocol'),'select',_('The endpoint must have an address in this family.'),[['6','IPv6'],['4','IPv4']]);
+ add(general,'preferred_family',_('Preferred protocol'),'select',_('The endpoint must have an address in this family. Select the parent uplink; its IPv4/IPv6 child is resolved automatically.'),[['6','IPv6'],['4','IPv4']]);
  add(general,'preferred_other',_('Allow the other IP family on this uplink'),'flag',_('Only when the preferred family fails the failover policy. Recovery returns to the preferred family automatically.'));
  add(general,'fallback',_('Fallback uplink'),'select',null,uplinks);
  add(general,'fallback_family',_('Fallback protocol'),'select',null,[['4','IPv4'],['6','IPv6']]);
@@ -114,7 +114,7 @@ function pathTable(state){
   var selected=state.selected===p.id;
   return E('tr',{'class':'tr'},[
    E('td',{'class':'td'},(selected?'● ':'')+p.role+' · IPv'+p.af+(p.selectable===false?' · '+_('probe only'):'')),
-   E('td',{'class':'td'},[E('span',{},p.device||'—'),E('br'),E('small',{},p.source||p.error||'—')]),
+   E('td',{'class':'td'},[E('span',{},(p.logical_interface||p.role)+' / '+(p.device||'—')),E('br'),E('small',{},p.source||p.error||'—')]),
    E('td',{'class':'td'},ping.loss==null?'—':fmt(ping.loss,1)+'% ('+ping.received+'/'+ping.sent+')'),
    E('td',{'class':'td'},ping.rtt==null?'—':fmt(ping.rtt,1)+' ms'),
    E('td',{'class':'td'},tcp?(tcp.ok?_('Reachable'):_('No response')):'—'),

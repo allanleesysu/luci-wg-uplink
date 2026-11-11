@@ -39,6 +39,10 @@ If the peer uses separate A/AAAA hostnames, enter IPv4/IPv6 aliases under Advanc
 
 Static uplinks without a gateway need a gateway override. Devices, native addresses and gateways are derived from netifd, including DHCPv6 siblings and MBIM child interfaces. No fixed USB/device indices are required.
 
+Select the parent uplink (for example wan3). The controller resolves netifd's wan3_4/wan3_6 children and configured device=@parent aliases separately for each IP family, even when the child has a different L3 device. PPPoE's dynamically created _6 is handled the same way. Gateway-free PPP defaults are supported. The dropdown names detected children, and live checks show the resolved logical interface plus device. Down children are not treated as usable through stale kernel addresses.
+
+IPv6 probes require a usable native global source address on the resolved path; a delegated prefix alone is not a WAN source address.
+
 Candidate checks are outside WireGuard and source-pinned. Optional verification addresses are checked inside WG after selection; at least one must reply.
 
 ### Timing
@@ -130,6 +134,7 @@ Backend tests without real network changes:
 Receiver tests:
 
     python3 tests/test_receiver.py
+    python3 tests/test_family.py
 
 Render and form serialization fixture (Node.js on a development machine):
 
@@ -146,6 +151,8 @@ JavaScript syntax/render fixtures and authenticated HTTP route/RPC tests were us
 
 Uses LuCI/rpcd/ucode, netifd, Linux policy routing, nftables and WireGuard tools; no new tunnel protocol.
 
+- [OpenWrt PPP IPv6 dynamic-child implementation](https://git.openwrt.org/openwrt/openwrt/tree/?path=package%2Fnetwork%2Fservices%2Fppp%2Ffiles%2Flib%2Fnetifd%2Fppp6-up)
+- [OpenWrt MBIM setup](https://openwrt.org/docs/guide-user/network/wan/wwan/ltedongle)
 - [LuCI](https://github.com/openwrt/luci)
 - [WireGuard tools](https://git.zx2c4.com/wireguard-tools/)
 - [iperf3 protocol](https://github.com/esnet/iperf/blob/master/src/iperf_api.h)
