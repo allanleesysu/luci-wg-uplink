@@ -4,7 +4,7 @@ import os,sys,json,time,re,socket,struct,subprocess,fcntl,ipaddress,hashlib,thre
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import wg_uplink_actions as audit
-VERSION="1.2.0"
+VERSION="1.2.1"
 RUN=Path("/var/run/wg-uplink")
 PERSIST=Path("/etc/wg-uplink")
 DISCOVER="/usr/libexec/wg-uplink-discover.uc"
@@ -421,7 +421,7 @@ def check_path(path,p):
    key=("tcp",host,port,mode);mapping[pre]["tcp"]=key
    specs[key]=lambda host=host,port=port,mode=mode:tcp(src,host,af,port,mode) if host else {"ok":False,"error":"No address for this family"}
   if p[pre+"_dns"]=="1":
-   servers=p[pre+"_dns_servers"] or (["2606:4700:4700::1111","2001:4860:4860::8888"] if af==6 else ["1.2.0.1","8.8.8.8"])
+   servers=p[pre+"_dns_servers"] or (["2606:4700:4700::1111","2001:4860:4860::8888"] if af==6 else ["1.2.1.1","8.8.8.8"])
    targets=[a for h in servers for a in resolve(h,af)[:1]]
    name=p[pre+"_dns_name"];key=("dns",tuple(targets),name);mapping[pre]["dns"]=key
    def dns_group(targets=targets,name=name):
@@ -436,9 +436,9 @@ def general_health(paths):
  if not available:return {"ok":False,"reason":"Preferred uplink has no usable native address/gateway"}
  jobs=[]
  for x in available:
-  for host in (["2606:4700:4700::1111","2001:4860:4860::8888"] if x["af"]==6 else ["1.2.0.1","8.8.8.8"]):
+  for host in (["2606:4700:4700::1111","2001:4860:4860::8888"] if x["af"]==6 else ["1.2.1.1","8.8.8.8"]):
    jobs.append((x["id"]+host,lambda x=x,host=host:ping(x["source"],host,x["af"],2)))
-  target="2606:4700:4700::1111" if x["af"]==6 else "1.2.0.1"
+  target="2606:4700:4700::1111" if x["af"]==6 else "1.2.1.1"
   jobs.append((x["id"]+"tcp",lambda x=x,target=target:tcp(x["source"],target,x["af"],443,"connect")))
  rs=parallel(jobs)
  return {"ok":any(v.get("ok") for v in rs.values()),"checks":rs}
@@ -503,6 +503,7 @@ def rule(af,pref,args,known):
  return True
 def install_resources(paths,s):
  changed=False
+ probe_selector="0x0/"+hex(0xffffffff ^ mwan3_mark_mask())
  for x in paths:
   af=x["af"];table=x["table"];pref=x["pref"]
   opposite=RUN/"rules"/(str(10-af)+"-"+str(pref)+".json")
@@ -526,7 +527,7 @@ def install_resources(paths,s):
   route+=["dev",x["device"],"src",x["source"]]
   if x["gateway"]:route+=["onlink"]
   command(route+["metric","10"],check=True)
-  changed=bool(rule(af,pref,["from",x["source"]+("/128" if af==6 else "/32"),"lookup",table],s.get("initialized",False))) or changed
+  changed=bool(rule(af,pref,["from",x["source"]+("/128" if af==6 else "/32"),"fwmark",probe_selector,"lookup",table],s.get("initialized",False))) or changed
  return changed
 MARK_DEFAULTS={"socket_mark_base":"0x80000000","socket_mark_mask":"0x800000ff"}
 SOCKET_MARK_BASE=0x80000000

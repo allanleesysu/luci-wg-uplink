@@ -51,4 +51,16 @@ class Marks(unittest.TestCase):
   with patch.object(w,'mwan3_mark_mask',return_value=0),patch.object(w,'command',return_value=result):
    w.validate_mark_settings(settings,check_rules=True)
    with self.assertRaises(ValueError):w.validate_mark_settings({'socket_mark_base':'0x80000000','socket_mark_mask':'0x803f0000'},check_rules=True)
+ def test_probe_source_rules_exclude_foreign_socket_marks(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   old=w.RUN;w.RUN=Path(tmp);calls=[]
+   reply=type('Result',(),{'returncode':0,'stdout':''})()
+   try:
+    with patch.object(w,'mwan3_mark_mask',return_value=0x3f00),patch.object(w,'command',return_value=reply),patch.object(w,'rule',side_effect=lambda af,pref,args,known:calls.append(args)):
+     w.install_resources([{'af':4,'table':48008,'pref':504,'available':True,'gateway':'192.0.2.1','device':'eth1','source':'192.0.2.2'}],{})
+    args=calls[0];mark,mask=map(lambda x:int(x,0),args[args.index('fwmark')+1].split('/'))
+    self.assertEqual(0x500&mask,mark)
+    self.assertNotEqual(0x40000&mask,mark)
+    self.assertNotEqual(0x80000001&mask,mark)
+   finally:w.RUN=old
 if __name__=='__main__':unittest.main(verbosity=2)

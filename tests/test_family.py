@@ -12,7 +12,7 @@ def check(ok,label):
  assert ok,label
  count+=1;print("PASS",label)
 for w in modules:
- def cmd(argv,**kwargs):return type("Result",(),{"returncode":0,"stdout":"[]","stderr":""})()
+ def cmd(argv,**kwargs):return type("Result",(),{"returncode":0,"stdout":"0x3f00" if argv[0]=="uci" else "[]","stderr":""})()
  w.command=cmd
  d={"interfaces":[{"name":"wan","proto":"mbim"}],"runtime":[
   {"interface":"wan","proto":"mbim","up":True,"l3_device":"control0","ipv4-address":[],"ipv6-address":[],"route":[]},
