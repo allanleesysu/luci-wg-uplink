@@ -35,6 +35,14 @@ Only resources with ownership recorded in RAM are cleaned up. Initial collisions
 
 Configuration writes are restricted to the app's own UCI file. Network/firewall UCI and unrelated routing tables are left alone.
 
+## mwan3/PBR coexistence
+
+Generated WG socket marks use 0x80000000 plus the slot in the low byte. Endpoint selection rules match only 0x800000ff, so mwan3's 0x3f00 updates and the receiver's reserved field cannot change the selector's identity. The generated values do not set the separate 0x40000 management-pin bit.
+
+For a retained nonzero interface mark, the configured mwan3 mmx_mask is excluded from the RPDB match. A legacy mark containing only mwan3-owned bits is rejected because it has no stable identity outside that field. Other PBR modules must preserve the selector's identity bits; full-mark overwrites require integration rather than an assumption of compatibility.
+
+The owned endpoint rules at priorities 301–332 precede normal mwan3 member rules and the audited static management/default rules. Probe source rules precede those rules too. The selector manages Core/router-local WG sockets; input/output guards do not operate on forwarded LAN-client WG traffic. Per-client IPv6 prefix selection remains a separate consumer policy.
+
 ## Receiver routing ownership
 
 - Reserved ct/meta mark bits:0x3f000000; all other bits are retained.

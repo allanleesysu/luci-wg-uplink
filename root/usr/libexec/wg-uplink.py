@@ -4,7 +4,7 @@ import os,sys,json,time,re,socket,struct,subprocess,fcntl,ipaddress,hashlib,thre
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import wg_uplink_actions as audit
-VERSION="1.1.0"
+VERSION="1.1.1"
 RUN=Path("/var/run/wg-uplink")
 PERSIST=Path("/etc/wg-uplink")
 DISCOVER="/usr/libexec/wg-uplink-discover.uc"
@@ -525,12 +525,32 @@ def install_resources(paths,s):
   command(route+["metric","10"],check=True)
   changed=bool(rule(af,pref,["from",x["source"]+("/128" if af==6 else "/32"),"lookup",table],s.get("initialized",False))) or changed
  return changed
+# Keep generated socket identity outside mwan3 (0x3f00), common PBR fields,
+# the independent receiver (0x3f000000), and unrelated low routing marks.
+SOCKET_MARK_BASE=0x80000000
+SOCKET_MARK_MASK=0x800000ff
+
+def selection_mark(mark):
+ value=int(str(mark),0)
+ if value & SOCKET_MARK_BASE and not value & ~SOCKET_MARK_MASK:
+  return hex(value)+"/"+hex(SOCKET_MARK_MASK)
+ # Preserve pre-existing interface marks, ignoring only mwan3's owned field.
+ if Path('/etc/config/mwan3').exists():
+  result=command(['uci','-q','get','mwan3.@globals[0].mmx_mask'])
+  try:foreign=int(result.stdout.strip(),0) if result.returncode==0 else 0x3f00
+  except ValueError:raise ValueError('Invalid mwan3 mark mask')
+  if not 0<foreign<=0xffffffff:raise ValueError('Invalid mwan3 mark mask')
+  stable=0xffffffff ^ foreign
+  if not value & stable:raise ValueError('Existing WG mark has no identity outside mwan3 bits')
+  return hex(value & stable)+"/"+hex(stable)
+ return str(mark)
+
 def mark_for(p,live):
  path=RUN/"interfaces"/(p["interface"]+".json")
  original=readjson(path)
  if not original:
   mark=live.get("mark","off")
-  original={"original_mark":mark,"mark":mark if mark not in ("off","0","0x0") else hex(0x4a00+int(p["slot"]))}
+  original={"original_mark":mark,"mark":mark if mark not in ("off","0","0x0") else hex(SOCKET_MARK_BASE+int(p["slot"]))}
   atomic(path,original)
  return original["mark"]
 def update_guard(states,override=None):
@@ -568,7 +588,7 @@ def update_guard(states,override=None):
  return True
 def select_route(p,target,mark,s):
  pref=300+int(p["slot"]);af=target["af"];addr=target["ips"][0]
- rule(af,pref,["to",addr+("/128" if af==6 else "/32"),"fwmark",mark,"ipproto","udp","dport",target["port"],"lookup",target["table"]],s.get("initialized",False))
+ rule(af,pref,["to",addr+("/128" if af==6 else "/32"),"fwmark",selection_mark(mark),"ipproto","udp","dport",target["port"],"lookup",target["table"]],s.get("initialized",False))
  # Remove only the opposite-family selection rule, never management rules.
  other=10-af;cache=RUN/"rules"/(str(other)+"-"+str(pref)+".json")
  if cache.exists():delrule(other,pref);cache.unlink()

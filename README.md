@@ -67,7 +67,7 @@ Destination/address-family/UDP-port rules and the WG interface mark select each 
 
 Provider tables have unreachable defaults to prevent fall-through to another WAN. Input/output guards constrain known endpoint traffic to the selected device/family. Endpoint updates and route-cache invalidation prevent an old cached underlay from surviving a switch.
 
-Existing nonzero WG marks are retained. A newly assigned mark is restored when the last policy on the interface is disabled. Private/preshared keys are never returned by RPC.
+Generated marks use a high-bit identity and masked route matching, so mwan3 can update its own mark field without overriding the WG selection. Existing nonzero WG marks are retained; their mwan3-owned bits are excluded from matching, and a mark with no remaining identity is rejected. A newly assigned mark is restored when the last policy on the interface is disabled. Private/preshared keys are never returned by RPC.
 
 Two devices sharing the same source IP are rejected rather than reporting incorrectly attributed health results.
 
@@ -159,6 +159,7 @@ Receiver tests:
 
     python3 tests/test_receiver.py
     python3 tests/test_family.py
+    python3 tests/test_mwan3.py
     python3 tests/test_actions.py
 
 Render and form serialization fixture (Node.js on a development machine):
