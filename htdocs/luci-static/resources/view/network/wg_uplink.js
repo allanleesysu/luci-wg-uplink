@@ -34,6 +34,9 @@ function select(v,options){
 function checkbox(v){var n=E('input',{type:'checkbox'});n.checked=String(v)==='1';return n;}
 function textarea(v){return E('textarea',{'class':'cbi-input-textarea',rows:2,style:'width:100%'},Array.isArray(v)?v.join('\n'):String(v||''));}
 function showActionLogs(){
+ var page=typeof document!=='undefined'?document.getElementById('wg-uplink-page'):null;
+ var width=page&&page.getBoundingClientRect?Math.round(page.getBoundingClientRect().width):0;
+ var sizing=E('style',{},'#modal_overlay .modal.wg-uplink-log { width: '+(width>0?width+'px':'calc(100vw - 2rem)')+' !important; max-width: calc(100vw - 2rem) !important; min-width: 0; box-sizing: border-box; }');
  var container=E('div',{},_('Loading…'));
  var refresh=E('button',{'class':'btn',click:load},_('Refresh'));
  function load(){
@@ -58,10 +61,11 @@ function showActionLogs(){
   }).catch(function(e){notify(e);}).finally(function(){refresh.disabled=false;});
  }
  ui.showModal(_('WG Uplink — Action log'),[
+  sizing,
   E('p',{},_('Latest applied changes, newest first. Logs persist across reboot; routine checks and unchanged settings are omitted.')),
   container,
   E('div',{'class':'right',style:'margin-top:1em'},[refresh,' ',E('button',{'class':'btn',click:ui.hideModal},_('Close'))])
- ]);
+ ],'wg-uplink-log');
  return load();
 }
 function editPeer(peer,data,refresh){
@@ -260,7 +264,7 @@ return view.extend({
    E('button',{'class':'btn',click:function(){outbound.style.display='';receiver.style.display='none';}},_('Uplink selection')),
    E('button',{'class':'btn',click:function(){outbound.style.display='none';receiver.style.display='';}},_('Receiver'))
   ]);
-  return E('div',{},[
+  return E('div',{id:'wg-uplink-page'},[
    E('div',{style:'display:flex;justify-content:space-between;align-items:center;gap:1em;margin-bottom:1em'},[E('h2',{style:'margin:0'},_('WG Uplink')),E('button',{'class':'btn',click:showActionLogs},_('Show log'))]),
    E('p',{},_('Choose preferred and fallback uplinks for outbound WireGuard peers. Sticky routing is enforced in both directions. Peers without a configured endpoint are listed for reference and are not changed.')),
    tabs,outbound,receiver

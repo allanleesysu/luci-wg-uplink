@@ -26,9 +26,9 @@ async function run(source,data) {
   if(spec.method==='save'){request=JSON.parse(arg);return Promise.resolve({ok:true});}
   return Promise.resolve(data);
  }};
- const ui={showModal:(title,items)=>{modal=E('modal',{},items);},hideModal:()=>{},addNotification:()=>{}};
- const v=new Function('view','rpc','ui','poll','E','_',source)(
-  {extend:x=>x},rpc,ui,{add:()=>{}},E,x=>x);
+ const ui={showModal:(title,items,cls)=>{modal=E('modal',{class:cls},items);},hideModal:()=>{},addNotification:()=>{}};
+ const v=new Function('view','rpc','ui','poll','E','_','document',source)(
+  {extend:x=>x},rpc,ui,{add:()=>{}},E,x=>x,{getElementById:id=>id==='wg-uplink-page'?{getBoundingClientRect:()=>({width:1240})}:null});
  const root=v.render(data);
  function button(tree,label){return walk(tree).find(x=>x.tag==='button'&&text(x)===label);}
  assert(button(root,'Receiver'),'Receiver tab missing');
@@ -36,6 +36,7 @@ async function run(source,data) {
  await button(root,'Show log').attrs.click();
  assert(text(modal).includes('Asia/Singapore')&&text(modal).includes('switch_path')&&text(modal).includes('receiver'),'Action log popup fields missing');
  assert(button(modal,'Refresh')&&button(modal,'Close'),'Action log popup controls missing');
+ assert(modal.attrs.class==='wg-uplink-log'&&text(modal).includes('width: 1240px')&&text(modal).includes('max-width: calc(100vw - 2rem)'),'Action log width does not follow the page/viewport');
  const config=walk(root).filter(x=>x.tag==='button'&&text(x)==='Configure');
  const eligible=data.interfaces.reduce((n,i)=>n+i.peers.filter(p=>p.eligible).length,0);
  assert(config.length===eligible,'Configure shown for an ineligible peer');

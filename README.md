@@ -127,7 +127,7 @@ After an OS/ABI upgrade, reinstall matching runtime dependencies if needed. RAM 
 
 ## Persistent action log
 
-Click **Show log** at the far right of the WG Uplink title. The popup combines uplink and receiver entries, newest first, with Refresh and expandable action/data fields. The read-only logs RPC uses the same LuCI read ACL as status.
+Click **Show log** at the far right of the WG Uplink title. The popup matches the WG Uplink page width, is capped to the viewport on small screens, and combines uplink and receiver entries newest first, with Refresh and expandable action/data fields. The read-only logs RPC uses the same LuCI read ACL as status.
 
 Each JSONL entry contains timestamp, date, time, timezone and UTC offset; scope (uplink/receiver); trigger; action; and data. Data includes check results and observation timing for a switch, before/after values for settings and interface resources, or attempted/restored paths for a rollback.
 
