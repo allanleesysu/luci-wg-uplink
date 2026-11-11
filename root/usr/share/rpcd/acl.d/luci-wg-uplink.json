@@ -1,0 +1,20 @@
+{
+  "luci-wg-uplink": {
+    "description": "Manage per-peer WireGuard uplink preferences",
+    "read": {
+      "ubus": {
+        "luci.wg_uplink": [
+          "status"
+        ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "luci.wg_uplink": [
+          "save",
+          "check"
+        ]
+      }
+    }
+  }
+}

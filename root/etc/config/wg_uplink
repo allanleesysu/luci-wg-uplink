@@ -1,0 +1,2 @@
+config globals 'main'
+	option interval '10'

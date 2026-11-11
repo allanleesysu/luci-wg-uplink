@@ -1,0 +1,15 @@
+{
+  "admin/network/wg_uplink": {
+    "title": "WG Uplink",
+    "order": 67,
+    "action": {
+      "type": "view",
+      "path": "network/wg_uplink"
+    },
+    "depends": {
+      "acl": [
+        "luci-wg-uplink"
+      ]
+    }
+  }
+}

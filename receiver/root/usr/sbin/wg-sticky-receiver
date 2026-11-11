@@ -1,0 +1,10 @@
+#!/bin/sh
+if [ -x /usr/bin/python3 ]; then
+ exec /usr/bin/python3 /usr/libexec/wg-sticky-receiver.py "$@"
+elif [ -x /opt/wgclients-python/usr/bin/python3 ]; then
+ export PYTHONHOME=/opt/wgclients-python/usr
+ export LD_LIBRARY_PATH=/opt/wgclients-python/usr/lib
+ exec /opt/wgclients-python/usr/bin/python3 /usr/libexec/wg-sticky-receiver.py "$@"
+fi
+echo '{"ok":false,"error":"Python 3 runtime is required"}'
+exit 1

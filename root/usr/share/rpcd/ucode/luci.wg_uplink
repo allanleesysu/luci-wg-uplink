@@ -1,0 +1,21 @@
+'use strict';
+import { popen } from 'fs';
+function quote(s) { return "'" + replace(s, "'", "'\\''") + "'"; }
+function backend(action,data) {
+ let cmd='/usr/sbin/wg-uplink '+action;
+ if(data!=null)cmd+=' '+quote(data);
+ let p=popen(cmd+' 2>/dev/null','r');
+ if(!p)return {ok:false,error:'Unable to start WG Uplink'};
+ let out=p.read('all');p.close();
+ try{return json(out);}catch(e){return {ok:false,error:'WG Uplink returned an invalid response'};}
+}
+return {
+ 'luci.wg_uplink': {
+  status:{call:function(){return backend('status',null);}},
+  save:{args:{data:'data'},call:function(req){
+   if(length(req.args.data)>16384)return {ok:false,error:'Request too large'};
+   return backend('save',req.args.data);
+  }},
+  check:{call:function(){return backend('kick',null);}}
+ }
+};

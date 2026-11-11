@@ -1,0 +1,3 @@
+config receiver 'main'
+	option enabled '0'
+	option interval '10'

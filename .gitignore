@@ -1,0 +1,10 @@
+/migration-backup/
+/migrate-kwrt.py
+/docs/DEPLOYMENT-KWRT.md
+/tests/*.json
+**/__pycache__/
+*.pyc
+*.tar.gz
+*.key
+*.token
+/tests/*-plan.nft
