@@ -41,7 +41,13 @@ def main():
   ubus("session","grant",{"ubus_rpc_session":sid,"objects":[["luci.wg_uplink","save"]]})
   data=status["result"][1];peer=next(p for i in data["interfaces"] for p in i["peers"] if p["eligible"])
   payload={k:v for k,v in peer["policy"].items() if k in set(w.DEFAULTS)|{"id","interface","peer_key"}}
+  assert payload["fo_ping_count"]=="5" and payload["rec_ping_count"]=="5","Installed count defaults not applied"
   before=w.command(["uci","export","wg_uplink"]).stdout
+  for field in ("fo_ping_count","rec_ping_count"):
+   bad=dict(payload,**{field:"0"})
+   reply=http_rpc(sid,"save",{"data":json.dumps(bad)})["result"][1]
+   assert not reply["ok"] and w.command(["uci","export","wg_uplink"]).stdout==before
+  print("PASS ping count defaults and RPC validation")
   invalid=dict(payload,endpoint4="host;invalid")
   reply=http_rpc(sid,"save",{"data":json.dumps(invalid)})["result"][1]
   assert reply["ok"] is False
@@ -51,7 +57,8 @@ def main():
   assert reply["ok"],reply
   after=w.inventory()
   assert len(after["policies"])==1 and after["policies"][0]["slot"]=="1"
-  print("PASS UI-shaped Save & Apply keeps one stable policy")
+  assert after["policies"][0]["fo_ping_count"]=="5" and after["policies"][0]["rec_ping_count"]=="5"
+  print("PASS UI-shaped Save & Apply keeps one stable policy with persisted ping counts")
   state=w.readjson(w.RUN/"peers"/(peer["id"]+".json"))
   assert state.get("selected")=="preferred6" and state.get("initialized")
   print("PASS migration retained active preferred IPv6")

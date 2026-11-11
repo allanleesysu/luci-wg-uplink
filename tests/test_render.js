@@ -37,9 +37,16 @@ async function run(source,data) {
  assert(!/private_key|preshared_key/.test(JSON.stringify(data)),'Secret field in status');
  if(config.length) {
   config[0].attrs.click();
+  const samples=walk(modal).filter(x=>x.tag==='div'&&x.attrs.class==='cbi-value'&&text(x.children[0])==='Pings per check')
+   .map(x=>walk(x).find(n=>n.tag==='input'));
+  assert(samples.length===2,'Ping sample fields missing from Failover/Recovery');
+  const policy=data.interfaces.flatMap(i=>i.peers).find(p=>p.eligible).policy;
+  assert(samples[0].value===String(policy.fo_ping_count||5)&&samples[1].value===String(policy.rec_ping_count||5),'Configured ping counts not rendered');
+  samples[0].value='7';samples[1].value='9';
   button(modal,'Save & Apply').attrs.click();
   await new Promise(r=>setTimeout(r,0));
   assert(request&&request.interface&&request.peer_key,'Outbound policy save not serialized');
+  assert(request.fo_ping_count==='7'&&request.rec_ping_count==='9','Separate ping counts not serialized');
  }
  if(data.receiver&&data.receiver.installed) {
   assert(button(root,'Configure receiver'),'Receiver configuration missing');

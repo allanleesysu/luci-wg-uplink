@@ -156,4 +156,35 @@ with tempfile.TemporaryDirectory() as tmp:
  except ValueError:check(True,"prior state cannot claim an uncached foreign routing rule")
  else:raise AssertionError("Foreign rule was overwritten")
  w.command=original
+
+# Old saved policies inherit five probes; each peer/policy can override the count.
+legacy={k:v for k,v in valid.items() if k not in ("fo_ping_count","rec_ping_count")}
+check(w.validate(legacy,d)["fo_ping_count"]=="5" and w.cfg(legacy)["rec_ping_count"]=="5","existing policies inherit five pings")
+check(w.validate(dict(valid,fo_ping_count=1,rec_ping_count="20"),d)["rec_ping_count"]=="20","independent ping count boundaries accepted")
+for key in ("fo_ping_count","rec_ping_count"):
+ for bad in ("0","21","2.5",2.5,True,"5;bad"):
+  invalid(dict(valid,**{key:bad}),d,key+" rejects "+str(bad))
+original_ping=w.ping
+calls=[]
+def fake_ping(src,host,af,count=5):
+ calls.append((host,count))
+ return {"ok":True,"sent":count,"received":count-1,"loss":100/count,"rtt":5}
+w.ping=fake_ping
+probe=dict(p,fo_tcp="0",rec_tcp="0")
+candidate={"usable":True,"source":"192.0.2.2","af":4,"ips":["198.51.100.1"]}
+try:
+ result=w.check_path(candidate,probe)["checks"]
+ check(calls==[("198.51.100.1",5)] and result["fo"]["ping"]["sent"]==5,"matching failover/recovery samples share five actual probes")
+ check(result["fo"]["ping"]["loss"]==20,"one lost packet in five reports twenty percent")
+ calls.clear()
+ result=w.check_path(candidate,dict(probe,fo_ping_count="3",rec_ping_count="7"))["checks"]
+ check(sorted(n for h,n in calls)==[3,7] and result["rec"]["ping"]["sent"]==7,"different failover/recovery counts run independent samples")
+ calls.clear()
+ result=w.check_path(candidate,dict(probe,fo_ping_targets=["198.51.100.1","198.51.100.2"],rec_ping_targets=["198.51.100.1","198.51.100.2"]))["checks"]
+ check(result["fo"]["ping"]["sent"]==10 and result["fo"]["ping"]["received"]==8 and result["fo"]["ping"]["loss"]==20,"multiple targets aggregate actual sent and received counts")
+ calls.clear()
+ w.check_path(candidate,dict(probe,fo_ping_count="2",rec_ping_count="2"))
+ check(calls==[("198.51.100.1",2)] and probe["fo_ping_count"]=="5","one peer's custom count does not change another policy")
+finally:w.ping=original_ping
+
 print("ALL",count,"CHECKS PASSED")

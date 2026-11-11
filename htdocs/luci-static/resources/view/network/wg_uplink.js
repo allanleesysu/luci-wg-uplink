@@ -10,8 +10,8 @@ var checkNow=rpc.declare({object:'luci.wg_uplink',method:'check',expect:{'':{}}}
 var fields=['enabled','label','preferred','preferred_family','fallback','fallback_family',
  'preferred_other','fallback_other','observe_seconds','recovery_seconds','fast_seconds',
  'preferred_gateway4','preferred_gateway6','fallback_gateway4','fallback_gateway6','endpoint4','endpoint6','verify_targets',
- 'fo_ping','fo_ping_loss','fo_ping_targets','fo_tcp','fo_tcp_host','fo_tcp_port','fo_tcp_mode','fo_dns','fo_dns_name','fo_dns_servers','fo_combine',
- 'rec_ping','rec_ping_loss','rec_ping_targets','rec_tcp','rec_tcp_host','rec_tcp_port','rec_tcp_mode','rec_dns','rec_dns_name','rec_dns_servers','rec_combine'];
+ 'fo_ping','fo_ping_count','fo_ping_loss','fo_ping_targets','fo_tcp','fo_tcp_host','fo_tcp_port','fo_tcp_mode','fo_dns','fo_dns_name','fo_dns_servers','fo_combine',
+ 'rec_ping','rec_ping_count','rec_ping_loss','rec_ping_targets','rec_tcp','rec_tcp_host','rec_tcp_port','rec_tcp_mode','rec_dns','rec_dns_name','rec_dns_servers','rec_combine'];
 var lists=['verify_targets','fo_ping_targets','rec_ping_targets','fo_dns_servers','rec_dns_servers'];
 var flags=['enabled','preferred_other','fallback_other','fo_ping','fo_tcp','fo_dns','rec_ping','rec_tcp','rec_dns'];
 function notify(e){ui.addNotification(null,E('p',{},e.message||String(e)));}
@@ -67,6 +67,8 @@ function editPeer(peer,data,refresh){
   if(fail)add(pane,'fast_seconds',_('Fast-track window (seconds)'),'number',_('Default 10 seconds. Used for corroborated local Internet/uplink failure, not a hub-only failure.'));
   pane.appendChild(E('h4',{},_('Ping')));
   add(pane,pre+'_ping',_('Enable ping check'),'flag');
+  var count=add(pane,pre+'_ping_count',_('Pings per check'),'number',_('1–20 pings per target per check; default 5. Loss combines all targets in this check, not the whole observation window. Larger samples can lengthen the check interval.'));
+  count.min='1';count.max='20';count.step='1';
   add(pane,pre+'_ping_loss',fail?_('Fail at or above loss (%)'):_('Recover at or below loss (%)'),'number',
    fail?_('100 means complete loss; smaller values intentionally allow partial-loss failover.'):_('99.9 accepts intermittent loss, but still requires a reply.'));
   add(pane,pre+'_ping_targets',_('Ping targets'),'list',_('Optional IPs or hostnames, one per line. Blank uses the peer endpoint. Every check is sent through its candidate uplink.'));

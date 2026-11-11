@@ -12,6 +12,7 @@ The counterpart is assumed to have one uplink, or to already implement sticky re
 
 - Per-peer preferred and fallback logical uplink, with IPv4/IPv6 preference.
 - Optional other-family fallback on the same provider, followed by active restoration of the preferred family.
+- Per-peer pings per target per check: **5** by default, independently configurable from1–20 under Failover and Recovery.
 - Separate configurable failover and recovery checks: ping loss thresholds/targets, generic TCP acceptance or iperf3 response, and DNS resolution.
 - Observed failure and recovery windows: **300 seconds** by default.
 - Corroborated local Internet/uplink failure fast track: **10 seconds** by default.
@@ -43,6 +44,12 @@ Candidate checks are outside WireGuard and source-pinned. Optional verification 
 ### Timing
 
 Probe interval defaults to10seconds and is configurable from5–60seconds. Timers use monotonic elapsed time. Monitoring gaps restart observation; extra hotplug/check requests cannot shorten it. Actual switch time includes probe/scheduler latency.
+
+### Ping sample size
+
+In a peer's Failover and Recovery tabs, set **Pings per check** independently. Both default to5, including existing configurations without an explicit count. Each setting applies per target and candidate path. Identical target/count samples are shared between failure and recovery; different counts use independent samples.
+
+One target with5 probes gives20-percentage-point steps. Multiple targets combine actual sent/received counts for that check. This is not a rolling average over the observation window. Targets run in parallel; larger samples may lengthen a monitoring cycle, so the probe interval is a minimum scheduling interval.
 
 ### TCP and DNS
 

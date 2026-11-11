@@ -2,7 +2,7 @@
 """WG Uplink: source-pinned health checks and per-peer WireGuard uplink policy."""
 import os,sys,json,time,re,socket,struct,subprocess,fcntl,ipaddress,hashlib,threading,queue,shutil,shlex
 from pathlib import Path
-VERSION="1.0.0"
+VERSION="1.0.1"
 RUN=Path("/var/run/wg-uplink")
 PERSIST=Path("/etc/wg-uplink")
 DISCOVER="/usr/libexec/wg-uplink-discover.uc"
@@ -12,11 +12,11 @@ DEFAULTS={
  "preferred_other":"1","fallback_other":"0","observe_seconds":"300","recovery_seconds":"300","fast_seconds":"10",
  "preferred_gateway4":"","preferred_gateway6":"","fallback_gateway4":"","fallback_gateway6":"",
  "endpoint4":"","endpoint6":"","verify_targets":[],
- "fo_ping":"1","fo_ping_loss":"100","fo_ping_targets":[],
+ "fo_ping":"1","fo_ping_count":"5","fo_ping_loss":"100","fo_ping_targets":[],
  "fo_tcp":"0","fo_tcp_host":"","fo_tcp_port":"443","fo_tcp_mode":"connect",
  "fo_dns":"0","fo_dns_name":"example.com","fo_dns_servers":[],
  "fo_combine":"all",
- "rec_ping":"1","rec_ping_loss":"99.9","rec_ping_targets":[],
+ "rec_ping":"1","rec_ping_count":"5","rec_ping_loss":"99.9","rec_ping_targets":[],
  "rec_tcp":"0","rec_tcp_host":"","rec_tcp_port":"443","rec_tcp_mode":"connect",
  "rec_dns":"0","rec_dns_name":"example.com","rec_dns_servers":[],
  "rec_combine":"any",
@@ -75,7 +75,8 @@ def validate(data,d):
  for k in ("preferred_family","fallback_family"):
   if str(p[k]) not in ("4","6"):raise ValueError("Protocol must be IPv4 or IPv6")
   p[k]=str(p[k])
- for k,lo,hi in (("observe_seconds",10,86400),("recovery_seconds",10,86400),("fast_seconds",1,300),("fo_tcp_port",1,65535),("rec_tcp_port",1,65535)):
+ for k,lo,hi in (("observe_seconds",10,86400),("recovery_seconds",10,86400),("fast_seconds",1,300),("fo_tcp_port",1,65535),("rec_tcp_port",1,65535),("fo_ping_count",1,20),("rec_ping_count",1,20)):
+  if k.endswith("_ping_count") and not re.fullmatch(r"[0-9]+",str(p[k])):raise ValueError("Pings per check must be a whole number")
   try:v=int(p[k])
   except (ValueError,TypeError):raise ValueError("Invalid number: "+k)
   if not lo<=v<=hi:raise ValueError(k+" must be between "+str(lo)+" and "+str(hi))
@@ -275,7 +276,7 @@ def parallel(items):
   t=threading.Thread(target=worker,args=(key,fn));t.start();threads.append(t)
  for t in threads:t.join()
  return results
-def ping(src,host,af,count=3):
+def ping(src,host,af,count=5):
  try:
   r=command(["ping","-"+str(af),"-n","-q","-I",src,"-c",str(count),"-W","1","-w",str(count+2),host],timeout=count+3)
   text=r.stdout
@@ -341,9 +342,12 @@ def check_path(path,p):
   if p[pre+"_ping"]=="1":
    hosts=p[pre+"_ping_targets"] or [ip]
    targets=[a for h in hosts for a in resolve(h,af)[:1]]
-   key=("ping",tuple(targets));mapping[pre]["ping"]=key
-   def ping_group(targets=targets):
-    rs=[ping(src,t,af) for t in targets]
+   count=int(p[pre+"_ping_count"])
+   key=("ping",tuple(targets),count);mapping[pre]["ping"]=key
+   def ping_group(targets=targets,count=count):
+    # Probe targets together so larger samples do not multiply check duration.
+    results=parallel([(i,lambda t=t:ping(src,t,af,count)) for i,t in enumerate(targets)])
+    rs=list(results.values())
     sent=sum(x["sent"] for x in rs);got=sum(x["received"] for x in rs)
     rtts=[x["rtt"] for x in rs if x["rtt"] is not None]
     return {"ok":got>0,"sent":sent,"received":got,"loss":100*(sent-got)/max(sent,1) if sent else 100,"rtt":sum(rtts)/len(rtts) if rtts else None}
