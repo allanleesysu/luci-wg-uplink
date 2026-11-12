@@ -45,6 +45,20 @@ IPv6 probes require a usable native global source address on the resolved path; 
 
 Candidate checks are outside WireGuard and source-pinned. Optional verification addresses are checked inside WG after selection; at least one must reply.
 
+### LAN roles and unmanaged peers
+
+A clean installation contains **no peer policies**. Every discovered peer starts unmanaged, and the optional receiver is disabled. Installing or starting the app does not automatically select uplinks. Existing administrator policies survive upgrades. Disabling the last policy on a WG interface restores the original socket mark and removes app-owned selection routes, probes and policy hooks.
+
+LAN role detection uses firewall zones and enabled forwarding to a separate NAT/masqueraded physical upstream. Network names alone do not determine the role. Aliases sharing the LAN bridge inherit the same role. A WG tunnel masquerade alone does not identify an edge router.
+
+- **Edge router downstream LAN:** IPv4 delegates to the existing LAN/mwan3 policies; IPv6 uses Core's ordinary default routing. Neither family gets a static uplink selector or br-lan egress guard. This does not invoke per-client IPv6 prefix selection. If Core has only source-specific IPv6 defaults and no ordinary unbound default, this candidate reports unavailable until a usable normal IPv6 default exists.
+- **Side router LAN:** use the normal direct-uplink resolver, native address and gateway, just like another conventional uplink.
+- **No enabled policy for a peer:** leave it to normal OpenWrt routing. An explicitly enabled receiver remains an independent function.
+
+For edge LAN IPv4, the app evaluates the selected LAN interface's source address/input device against the active native `mwan3_rules`, retains destination/IPset/protocol/port matches and order, and calls the existing mwan3 policy chains. It reuses their current health, weights and conntrack mark field; it does not maintain another ISP database or load-balancing algorithm. Only the configured WG endpoint/port and socket identity enter these hooks. Native connected-network handling is retained. Hooks are reconciled after mwan3 changes and removed when no longer needed. Health probes use the LAN address so they follow native LAN policies too.
+
+If mwan3 is absent, ordinary OpenWrt output routing applies. Arbitrary third-party source/MAC-specific client policies are not translated. This is a router-hosted WG connection, represented by the selected LAN interface address, rather than any particular LAN client. Detection relies on configured forwarding/NAT; unusual custom firewall scripts may require explicit direct uplinks instead.
+
 ### Timing
 
 Probe interval defaults to10seconds and is configurable from5–60seconds. Timers use monotonic elapsed time. Monitoring gaps restart observation; extra hotplug/check requests cannot shorten it. Actual switch time includes probe/scheduler latency.

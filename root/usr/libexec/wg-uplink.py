@@ -4,7 +4,9 @@ import os,sys,json,time,re,socket,struct,subprocess,fcntl,ipaddress,hashlib,thre
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import wg_uplink_actions as audit
-VERSION="1.2.2"
+import wg_uplink_lan as lan_routes
+from types import SimpleNamespace
+VERSION="1.3.0"
 RUN=Path("/var/run/wg-uplink")
 PERSIST=Path("/etc/wg-uplink")
 DISCOVER="/usr/libexec/wg-uplink-discover.uc"
@@ -279,7 +281,27 @@ def family_children(role,af,d):
   if supported:out.append(name)
  return out
 
+def delegated_resource(role,af,d):
+ context=lan_routes.context(role,d)
+ if context['mode']!='edge':return None
+ base=next((x for x in d['runtime'] if x['interface']==role),{})
+ out={'available':False,'role':role,'af':af,'logical_interface':role,'device':context['device'] or '',
+      'routing':'lan-policy' if af==4 else 'router-default','lan_device':context['device'] or '',
+      'gateway':'','point_to_point':False,'source':''}
+ if not base.get('up'):return dict(out,error='LAN interface is down')
+ if af==4:
+  out['source']=next((a['address'] for a in base.get('ipv4-address',[])), '')
+ else:
+  try:
+   route=json.loads(command(['ip','-j','-6','route','get','2606:4700:4700::1111'],check=True).stdout)[0]
+   out.update(source=route.get('prefsrc') or route.get('src') or '',device=route.get('dev',''))
+   if any(x['name']==out['device'] and x['proto']=='wireguard' for x in d['interfaces']):out['source']=''
+  except (ValueError,IndexError):pass
+ return dict(out,available=bool(out['source']),error='' if out['source'] else ('Core has no usable default IPv6 route' if af==6 else 'LAN has no usable IPv4 source'))
+
 def resource(role,af,override,d):
+ delegated=delegated_resource(role,af,d)
+ if delegated is not None:return delegated
  base,rows=family_rows(role,af,d)
  common={"available":False,"role":role,"af":af,"device":base.get("l3_device") or base.get("device") or "","logical_interface":role}
  if not base.get("up"):return dict(common,error="Uplink is down")
@@ -531,6 +553,11 @@ def install_resources(paths,s):
  probe_selector="0x0/"+hex(0xffffffff ^ mwan3_mark_mask())
  for x in paths:
   af=x["af"];table=x["table"];pref=x["pref"]
+  if x.get('routing'):
+   for family in (4,6):
+    cache=RUN/'rules'/(str(family)+'-'+str(pref)+'.json')
+    if cache.exists():delrule(family,pref);cache.unlink();changed=True
+   continue
   opposite=RUN/"rules"/(str(10-af)+"-"+str(pref)+".json")
   if opposite.exists():delrule(10-af,pref);opposite.unlink();changed=True
   owned=RUN/"tables"/(str(af)+"-"+str(table)+".json")
@@ -642,7 +669,7 @@ def update_guard(states,override=None):
     if af!=target["af"] or addr not in target["ips"]:
      commands.append("add rule inet wg_uplink input "+base+" counter drop")
      commands.append("add rule inet wg_uplink output "+outbase+" counter drop")
-    else:
+    elif not target.get("routing"):
      commands.append("add rule inet wg_uplink input "+base+" iifname != "+json.dumps(target["device"])+" counter drop")
      commands.append("add rule inet wg_uplink output "+outbase+" oifname != "+json.dumps(target["device"])+" counter drop")
  # All generated guard rules only drop; stable ordering avoids restart-only rewrites.
@@ -659,6 +686,11 @@ def update_guard(states,override=None):
  atomic(RUN/"guard-change.json",{"before":dict(old,observed=current),"after":after,"rules":commands})
  return True
 def select_route(p,target,mark,s):
+ if target.get('routing'):
+  for af in (4,6):
+   pref=300+int(p['slot']);cache=RUN/'rules'/(str(af)+'-'+str(pref)+'.json')
+   if cache.exists():delrule(af,pref);cache.unlink()
+  return
  pref=300+int(p["slot"]);af=target["af"];addr=target["ips"][0]
  rule(af,pref,["to",addr+("/128" if af==6 else "/32"),"fwmark",selection_mark(mark,p.get("_mark_settings")),"ipproto","udp","dport",target["port"],"lookup",target["table"]],s.get("initialized",False))
  # Remove only the opposite-family selection rule, never management rules.
@@ -684,6 +716,7 @@ def apply_path(p,s,target,all_states,trigger=None):
  support=audit.evidence(s);old_view=audit.path_view(old or {})
  endpoint=("["+target["ips"][0]+"]" if target["af"]==6 else target["ips"][0])+":"+str(target["port"])
  try:
+  lan_routes.sync(SimpleNamespace(**globals()),all_states,(s["id"],target))
   update_guard(all_states,(s["id"],target))
   select_route(p,target,mark,s)
   command(["ip","-"+str(target["af"]),"route","flush","cache"],check=True)
@@ -692,14 +725,16 @@ def apply_path(p,s,target,all_states,trigger=None):
   live=peer_runtime(p["interface"],p["peer_key"])
   if live.get("endpoint")!=endpoint:raise ValueError("Endpoint roamed during verification")
   proof=command(["ip","-"+str(target["af"]),"route","get",target["ips"][0],"mark",mark,"ipproto","udp","dport",target["port"]],check=True).stdout.strip()
-  if "dev "+target["device"]+" " not in proof+" ":raise ValueError("Sticky route verification failed")
+  if not target.get("routing") and "dev "+target["device"]+" " not in proof+" ":raise ValueError("Sticky route verification failed")
  except Exception as error:
   if old:
+   lan_routes.sync(SimpleNamespace(**globals()),all_states,(s["id"],old))
    select_route(p,old,mark,s);update_guard(all_states,(s["id"],old))
    ep=("["+old["ips"][0]+"]" if old["af"]==6 else old["ips"][0])+":"+str(old["port"])
    command(["ip","-"+str(old["af"]),"route","flush","cache"])
    command(["wg","set",p["interface"],"fwmark",mark,"peer",p["peer_key"],"endpoint",ep],check=True)
   else:
+   lan_routes.sync(SimpleNamespace(**globals()),all_states)
    for af in (4,6):
     pref=300+int(p["slot"]);cache=RUN/"rules"/(str(af)+"-"+str(pref)+".json")
     if cache.exists():delrule(af,pref);cache.unlink()
@@ -712,6 +747,7 @@ def apply_path(p,s,target,all_states,trigger=None):
  s.pop("failure_since",None);s.pop("recovery_since",None);s["timer"]=None
  audit.emit("uplink",trigger or ("check_condition_met" if old_view.get("id")!=target["id"] else "interface_detail_update_observed"),{"type":"switch_path" if old_view.get("id")!=target["id"] else "refresh_selected_path","interface":p["interface"],"peer":s["id"]},{"before":old_view,"after":audit.path_view(target),"route_proof":proof,"support":support})
 def cleanup_policy(p,s,remaining):
+ lan_routes.sync(SimpleNamespace(**globals()),remaining)
  slot=int(s.get("slot",p.get("slot",0)))
  if not slot:return
  for af in (4,6):
@@ -755,6 +791,7 @@ def tick(force=False,trigger="check_condition_met"):
    if key not in enabled:
     cleanup_policy({},s,[v for k,v in states.items() if k in enabled and k!=key]);states.pop(key)
     audit.emit("uplink","change_settings",{"type":"remove_peer_policy","interface":s.get("interface"),"peer":key},{"before":audit.path_view(s.get("active") or {}),"after":None})
+  lan_routes.sync(SimpleNamespace(**globals()),list(states.values()))
   if update_guard(list(states.values())):
    audit.emit("uplink",trigger,{"type":"reconcile_firewall"},dict(readjson(RUN/"guard-change.json"),support=[audit.evidence(s) for s in states.values()]))
   for ident,p in enabled.items():
@@ -816,6 +853,7 @@ def tick(force=False,trigger="check_condition_met"):
    if not hist or time.time()-hist[-1].get("time",0)>=55:
     hist.append({"time":time.time(),"selected":state.get("selected"),"reason":state.get("reason"),"paths":[{"id":x.get("id"),"failed":x.get("failed"),"checks":x.get("checks",{})} for x in state.get("paths",[])]})
     atomic(hp,hist[-2880:])
+  lan_routes.sync(SimpleNamespace(**globals()),list(states.values()))
   if update_guard(list(states.values())):
    audit.emit("uplink",trigger,{"type":"reconcile_firewall"},{"interfaces":[s.get("interface") for s in states.values()]})
   return {"ok":True,"policies":len(enabled)}
@@ -835,7 +873,7 @@ def status():
  for name in runtime_names:
   if not any(x["name"]==name for x in cards):cards.append({"name":name,"proto":"wireguard","peers":[],"runtime_only":True})
  runtime={x["interface"]:x for x in d["runtime"]}
- uplinks=[dict(x,device=runtime.get(x["name"],{}).get("l3_device",""),up=runtime.get(x["name"],{}).get("up",False),family_children={str(af):family_children(x["name"],af,d) for af in (4,6)}) for x in d["interfaces"] if x["proto"]!="wireguard" and x["name"]!="loopback"]
+ uplinks=[dict(x,routing_context=lan_routes.context(x["name"],d),device=runtime.get(x["name"],{}).get("l3_device",""),up=runtime.get(x["name"],{}).get("up",False),family_children={str(af):family_children(x["name"],af,d) for af in (4,6)}) for x in d["interfaces"] if x["proto"]!="wireguard" and x["name"]!="loopback"]
  return {"ok":True,"version":VERSION,"interfaces":cards,"uplinks":uplinks,"receiver":receiver_status(),"settings":{"interval":int(d["settings"].get("interval",10)),**mark_config(d["settings"]),"mwan3_mask":hex(mwan3_mark_mask())}}
 def daemon():
  first=True

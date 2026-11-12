@@ -9,5 +9,8 @@ c.foreach('network','interface',s=>{
  });
 });
 c.foreach('wg_uplink','policy',s=>{push(policies,s);});
+let zones=[], forwardings=[];
+c.foreach('firewall','zone',s=>{push(zones,{name:s.name,network:s.network||[],masq:s.masq||'0',masq6:s.masq6||'0'});});
+c.foreach('firewall','forwarding',s=>{push(forwardings,{src:s.src,dest:s.dest,enabled:s.enabled||'1'});});
 let settings=c.get_all('wg_uplink','main')||{};
-print(sprintf('%J',{interfaces,peers,policies,settings}));
+print(sprintf('%J',{interfaces,peers,policies,settings,firewall:{zones,forwardings}}));
