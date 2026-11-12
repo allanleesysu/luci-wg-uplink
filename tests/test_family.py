@@ -35,6 +35,24 @@ for w in modules:
  check(w.resource("wan",6,"",alias)["logical_interface"]=="provider6",w.__name__+" configured IPv6 @parent alias supported")
  alias["runtime"][1]["route"]=[{"target":"::","mask":0,"nexthop":"::"}]
  check(w.resource("wan",6,"",alias)["point_to_point"],w.__name__+" PPP IPv6 device-only default supported")
+# Dropdown labels must not confuse route-discovery fallbacks with family children.
+w=modules[0]
+labels={"interfaces":[{"name":"wan","proto":"pppoe"},{"name":"wan_6","proto":"dhcpv6","device":"@wan"}],
+ "runtime":[{"interface":"wan","up":True,"l3_device":"pppoe-wan","ipv4-address":[{"address":"198.51.100.2"}]},
+ {"interface":"wan_6","up":True,"proto":"dhcpv6","l3_device":"pppoe-wan","ipv6-address":[{"address":"2606:4700::2"}]}]}
+check(w.family_children("wan",4,labels)==[],"IPv6 @parent alias is not labelled as IPv4")
+check(w.family_children("wan",6,labels)==["wan_6"],"IPv6 @parent alias is labelled once under IPv6")
+static=copy.deepcopy(labels);static["interfaces"][1]={"name":"legacy","proto":"static","device":"@wan"}
+static["runtime"][1]={"interface":"legacy","up":True,"l3_device":"pppoe-wan","ipv4-address":[{"address":"192.0.2.2"}]}
+check(w.family_children("wan",4,static)==["legacy"] and w.family_children("wan",6,static)==[],"IPv4 static alias is not labelled as IPv6")
+same=copy.deepcopy(labels);same["interfaces"][1]["device"]="pppoe-wan";same["interfaces"][1]["name"]="unrelated";same["runtime"][1]["interface"]="unrelated"
+check(w.family_children("wan",6,same)==[],"Shared L3 device alone does not create an alias")
+dynamic=copy.deepcopy(labels);dynamic["interfaces"].pop()
+check(w.family_children("wan",6,dynamic)==["wan_6"] and not w.family_children("wan",4,dynamic),"Dynamic netifd IPv6 child is classified without UCI alias")
+v4=copy.deepcopy(labels);v4["interfaces"][1].update(name="v4",proto="dhcp");v4["runtime"][1].update(interface="v4")
+check(w.family_children("wan",4,v4)==["v4"] and w.family_children("wan",6,v4)==[],"DHCP alias is classified only as IPv4")
+check(w.resource("wan",4,"",d)["logical_interface"]=="wan", "Display fix leaves PPP IPv4 parent resource unchanged")
+
 # Check installed-route construction through the selector.
 w=modules[0];calls=[]
 def command(argv,**kwargs):

@@ -4,7 +4,7 @@ import os,sys,json,time,re,socket,struct,subprocess,fcntl,ipaddress,hashlib,thre
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import wg_uplink_actions as audit
-VERSION="1.2.1"
+VERSION="1.2.2"
 RUN=Path("/var/run/wg-uplink")
 PERSIST=Path("/etc/wg-uplink")
 DISCOVER="/usr/libexec/wg-uplink-discover.uc"
@@ -253,6 +253,31 @@ def family_rows(role,af,d):
  for row in rt:
   if dev and row.get("l3_device")==dev and row not in out:out.append(row)
  return base,out
+
+def family_children(role,af,d):
+ """Label only related aliases which actually support the requested family.
+
+ family_rows also contains same-device fallback rows for route discovery;
+ those rows alone do not establish a family-child relationship.
+ """
+ configured={x["name"]:x for x in d["interfaces"]}
+ out=[]
+ for row in family_rows(role,af,d)[1]:
+  name=row["interface"];conf=configured.get(name,{})
+  named=name==role+"_"+str(af)
+  if not named and (conf.get("device") or conf.get("ifname"))!="@"+role:continue
+  proto=conf.get("proto") or row.get("proto","")
+  if proto in ("dhcp","dhcpv6"):
+   supported=proto==("dhcp" if af==4 else "dhcpv6")
+  else:
+   supported=named or bool(row.get("ipv"+str(af)+"-address"))
+   if not supported:
+    for route in row.get("route",[]):
+     try:supported=ipaddress.ip_address(route["target"]).version==af
+     except (KeyError,ValueError):continue
+     if supported:break
+  if supported:out.append(name)
+ return out
 
 def resource(role,af,override,d):
  base,rows=family_rows(role,af,d)
@@ -810,7 +835,7 @@ def status():
  for name in runtime_names:
   if not any(x["name"]==name for x in cards):cards.append({"name":name,"proto":"wireguard","peers":[],"runtime_only":True})
  runtime={x["interface"]:x for x in d["runtime"]}
- uplinks=[dict(x,device=runtime.get(x["name"],{}).get("l3_device",""),up=runtime.get(x["name"],{}).get("up",False),family_children={str(af):[r["interface"] for r in family_rows(x["name"],af,d)[1] if r["interface"]==x["name"]+"_"+str(af) or (next((c.get("device","") for c in d["interfaces"] if c["name"]==r["interface"]),"")=="@"+x["name"])] for af in (4,6)}) for x in d["interfaces"] if x["proto"]!="wireguard" and x["name"]!="loopback"]
+ uplinks=[dict(x,device=runtime.get(x["name"],{}).get("l3_device",""),up=runtime.get(x["name"],{}).get("up",False),family_children={str(af):family_children(x["name"],af,d) for af in (4,6)}) for x in d["interfaces"] if x["proto"]!="wireguard" and x["name"]!="loopback"]
  return {"ok":True,"version":VERSION,"interfaces":cards,"uplinks":uplinks,"receiver":receiver_status(),"settings":{"interval":int(d["settings"].get("interval",10)),**mark_config(d["settings"]),"mwan3_mask":hex(mwan3_mark_mask())}}
 def daemon():
  first=True
