@@ -855,7 +855,7 @@ def tick(force=False,trigger="check_condition_met"):
     atomic(hp,hist[-2880:])
   lan_routes.sync(SimpleNamespace(**globals()),list(states.values()))
   if update_guard(list(states.values())):
-   audit.emit("uplink",trigger,{"type":"reconcile_firewall"},{"interfaces":[s.get("interface") for s in states.values()]})
+   audit.emit("uplink",trigger,{"type":"reconcile_firewall"},dict(readjson(RUN/"guard-change.json"),support=[audit.evidence(s) for s in states.values()]))
   return {"ok":True,"policies":len(enabled)}
 def status():
  d=inventory();ps=policies(d);by={id_for(p["interface"],p["peer_key"]):p for p in ps}
