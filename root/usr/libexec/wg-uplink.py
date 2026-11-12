@@ -468,7 +468,7 @@ def check_path(path,p):
    key=("tcp",host,port,mode);mapping[pre]["tcp"]=key
    specs[key]=lambda host=host,port=port,mode=mode:tcp(src,host,af,port,mode) if host else {"ok":False,"error":"No address for this family"}
   if p[pre+"_dns"]=="1":
-   servers=p[pre+"_dns_servers"] or (["2606:4700:4700::1111","2001:4860:4860::8888"] if af==6 else ["1.2.1.1","8.8.8.8"])
+   servers=p[pre+"_dns_servers"] or (["2606:4700:4700::1111","2001:4860:4860::8888"] if af==6 else ["1.1.1.1","8.8.8.8"])
    targets=[a for h in servers for a in resolve(h,af)[:1]]
    name=p[pre+"_dns_name"];key=("dns",tuple(targets),name);mapping[pre]["dns"]=key
    def dns_group(targets=targets,name=name):
@@ -483,10 +483,10 @@ def general_health(paths):
  if not available:return {"ok":False,"reason":"Preferred uplink has no usable native address/gateway"}
  jobs=[]
  for x in available:
-  for host in (["2606:4700:4700::1111","2001:4860:4860::8888"] if x["af"]==6 else ["1.2.1.1","8.8.8.8"]):
+  for host in (["2606:4700:4700::1111","2001:4860:4860::8888"] if x["af"]==6 else ["1.1.1.1","8.8.8.8"]):
    jobs.append((x["id"]+host,lambda x=x,host=host:ping(x["source"],host,x["af"],2)))
-  target="2606:4700:4700::1111" if x["af"]==6 else "1.2.1.1"
-  jobs.append((x["id"]+"tcp",lambda x=x,target=target:tcp(x["source"],target,x["af"],443,"connect")))
+  for target in (["2606:4700:4700::1111","2001:4860:4860::8888"] if x["af"]==6 else ["1.1.1.1","8.8.8.8"]):
+   jobs.append((x["id"]+"tcp"+target,lambda x=x,target=target:tcp(x["source"],target,x["af"],443,"connect")))
  rs=parallel(jobs)
  return {"ok":any(v.get("ok") for v in rs.values()),"checks":rs}
 def transition(p,s,paths,local_ok,now):

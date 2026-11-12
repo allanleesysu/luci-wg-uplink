@@ -192,4 +192,11 @@ try:
  check(calls==[("198.51.100.1",2)] and probe["fo_ping_count"]=="5","one peer's custom count does not change another policy")
 finally:w.ping=original_ping
 
+# A provider filtering Cloudflare must not fail public health when Google works.
+saved_ping,saved_tcp=w.ping,w.tcp
+w.ping=lambda *args:{"ok":False}
+w.tcp=lambda src,host,af,port,mode:{"ok":host=="8.8.8.8"}
+try:
+ check(w.general_health([{"id":"preferred4","group":"preferred","available":True,"af":4,"source":"192.0.2.2"}])["ok"],"Google TCP reachability keeps health good when Cloudflare and ICMP fail")
+finally:w.ping,w.tcp=saved_ping,saved_tcp
 print("ALL",count,"CHECKS PASSED")
