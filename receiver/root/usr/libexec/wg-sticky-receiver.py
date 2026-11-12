@@ -141,7 +141,9 @@ def peer_pins(d):
   slot=(int(mark[1])&0x3f000000)>>24
   if slot not in roles:continue
   src=re.findall(r"\bsrc=(\S+)",line);sport=re.findall(r"\bsport=(\d+)",line);dport=re.findall(r"\bdport=(\d+)",line)
-  for i in range(min(len(src),len(sport),len(dport),2)):
+  # Only an original inbound tuple proves a receiver pin. A locally initiated
+  # flow followed by a reply is not an incoming connection.
+  for i in range(min(len(src),len(sport),len(dport),1)):
    flows.append({"ip":str(ipaddress.ip_address(src[i])),"remote_port":int(sport[i]),"listen":int(dport[i]),"uplink":roles[slot]})
  interfaces=[]
  for row in command(["wg","show","all","listen-port"]).stdout.splitlines():
@@ -230,7 +232,7 @@ def main():
    d=inventory();m=core();us=m.discover(sys.modules[__name__],d)
    for i,u in enumerate(us,1):u["slot"]=i
    ports=[int(x.split()[1]) for x in command(["wg","show","all","listen-port"]).stdout.splitlines() if len(x.split())>1 and int(x.split()[1])>0]
-   print("\n".join(m.build_rules(us,ports,configured_outbound(d))));return
+   print("\n".join(m.build_rules(us,ports,configured_outbound(d),inbound=m.inbound_peers(sys.modules[__name__],d))));return
   elif action=="daemon":
    first=True
    while True:

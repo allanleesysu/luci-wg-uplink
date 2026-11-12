@@ -10,7 +10,10 @@ lines=core.build_rules(up,[51820,51821],states,[1,2,3]);text="\n".join(lines)
 assert 'iifname "wan-a"' in text and 'iifname "wan-b"' in text
 assert "type route hook output" in text
 assert text.index("ip6 saddr 2001:db8::1")<text.index("iifname")
-assert "ct direction" not in text  # Existing connections may start in either direction.
+assert "ct direction original ct mark" in text
+assert "ct direction reply ct mark" in text
+assert "udp sport { 51821 } ct direction original counter drop" in text
+assert "udp sport { 51820 } ct direction original counter drop" not in text
 assert "ct mark & 0x3f000000 == 0" in text
 assert "(meta mark & 0xc0ffffff) | 0x2000000" in text
 assert "== 0x3000000" in text  # Retired-slot replies still fail closed.
@@ -19,7 +22,7 @@ assert not any("dnat" in x or "snat" in x for x in lines)
 assert not any("private" in x for x in lines)
 print("PASS receiver port discovery, both address families and ingress marking")
 print("PASS configured outbound peer exclusion precedes learning")
-print("PASS existing UDP flows in either conntrack direction are supported")
+print("PASS only incoming originals are learned; passive original sends are blocked")
 print("PASS socket-mark low bits and retired-slot routing are preserved")
 print("PASS receiver neither opens firewall ports nor changes NAT")
 
@@ -42,3 +45,30 @@ with tempfile.TemporaryDirectory() as tmp:
  core.cleanup(runner,{"slots":[1]})
  assert not any("flush" in a for a in calls),"Unowned receiver table flushed"
  print("PASS failed attempts cannot claim foreign routing rules or cleanup foreign tables")
+
+# Status must not mistake a locally initiated flow's reply tuple for a pin.
+import json
+realpath=Path
+with tempfile.TemporaryDirectory() as tmp:
+ runner.RUN=realpath(tmp)
+ (runner.RUN/'receiver-ids.json').write_text(json.dumps({'wan1':1}))
+ (runner.RUN/'receiver.json').write_text(json.dumps({'active':True,'uplinks':[{'interface':'wan1','device':'pppoe-wan1'}]}))
+ remote='2001:db8::2';local='2001:db8::1'
+ body=['udp 17 100 src='+remote+' dst='+local+' sport=40220 dport=17173 src='+local+' dst='+remote+' sport=17173 dport=40220 mark=16777216']
+ class Proc:
+  def read_text(self):return body[0]
+ runner.Path=lambda p:Proc() if str(p)=='/proc/net/nf_conntrack' else realpath(p)
+ def statuscmd(argv,**kw):
+  output='wg0\t17173\n' if argv[-1]=='listen-port' else 'public\t['+remote+']:40220\n'
+  return type('R',(),{'returncode':0,'stdout':output,'stderr':''})()
+ runner.command=statuscmd
+ d={'peers':[{'interface':'wg0','key':'public','endpoint_host':''}]}
+ assert runner.peer_pins(d)[0]['peers'][0]['pinned']
+ body[0]='udp 17 100 src='+local+' dst='+remote+' sport=17173 dport=40220 src='+remote+' dst='+local+' sport=40220 dport=17173 mark=16777216'
+ assert not runner.peer_pins(d)[0]['peers'][0]['pinned']
+ print('PASS status accepts remote originals and rejects locally initiated reply tuples')
+# A mixed listener protects learned inbound tuples without blocking its outbound peer.
+mixed='\n'.join(core.build_rules(up,[51820],states,[1,2],[{'address':'2001:db8::2','listen':51820,'port':40220}]))
+assert 'ip6 daddr 2001:db8::2 udp sport 51820 udp dport 40220 ct direction original counter drop' in mixed
+assert 'udp sport { 51820 } ct direction original counter drop' not in mixed
+print('PASS mixed listener keeps configured outbound exemptions and guards inbound tuples')

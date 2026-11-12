@@ -25,7 +25,7 @@ def discover(w,d):
   dev=available[0]["device"]
   if dev not in bydevice:bydevice[dev]={"role":role,"device":dev,"paths":paths}
  return list(bydevice.values())
-def build_rules(uplinks,ports,states,slots=None):
+def build_rules(uplinks,ports,states,slots=None,inbound=()):
  """Local-input learning only. Never accepts traffic or opens firewall ports."""
  lines=["add table inet "+TABLE,
   "add chain inet "+TABLE+" input { type filter hook input priority -140; policy accept; }",
@@ -50,11 +50,33 @@ def build_rules(uplinks,ports,states,slots=None):
   for path in uplink["paths"]:
    if not path.get("available"):continue
    nf="ipv6" if path["af"]==6 else "ipv4"
-   lines.append("add rule inet "+TABLE+" input meta nfproto "+nf+" iifname "+json.dumps(path["device"])+" udp dport "+portset+" ct mark & "+hex(MASK)+" == 0 ct mark set (ct mark & "+hex(KEEP)+") | "+hex(mark))
+   lines.append("add rule inet "+TABLE+" input meta nfproto "+nf+" iifname "+json.dumps(path["device"])+" udp dport "+portset+" ct direction original ct mark & "+hex(MASK)+" == 0 ct mark set (ct mark & "+hex(KEEP)+") | "+hex(mark))
+ # A passive receiver must not initiate a fresh flow from an arbitrary local
+ # address and make its remote peer roam. Replies to inbound flows remain valid.
+ outbound_ports={s.get("listen_port") for s in states if s.get("initialized")}
+ passive=sorted(set(ports)-outbound_ports)
+ if passive:
+  listeners="{ "+", ".join(str(x) for x in passive)+" }"
+  lines.append("add rule inet "+TABLE+" output udp sport "+listeners+" ct direction original counter drop")
+ # Mixed inbound/outbound listeners can guard known inbound peer tuples too.
+ for peer in inbound:
+  ip="ip6" if ipaddress.ip_address(peer["address"]).version==6 else "ip"
+  lines.append("add rule inet "+TABLE+" output "+ip+" daddr "+peer["address"]+" udp sport "+str(peer["listen"])+" udp dport "+str(peer["port"])+" ct direction original counter drop")
  for slot in (slots if slots is not None else [u["slot"] for u in uplinks]):
   value=slot<<24
-  lines.append("add rule inet "+TABLE+" output udp sport "+portset+" ct mark & "+hex(MASK)+" == "+hex(value)+" counter meta mark set (meta mark & "+hex(KEEP)+") | "+hex(value))
+  lines.append("add rule inet "+TABLE+" output udp sport "+portset+" ct direction reply ct mark & "+hex(MASK)+" == "+hex(value)+" counter meta mark set (meta mark & "+hex(KEEP)+") | "+hex(value))
  return lines
+def inbound_peers(w,d):
+ inbound=[]
+ listens={x.split()[0]:int(x.split()[1]) for x in w.command(["wg","show","all","listen-port"]).stdout.splitlines() if len(x.split())>1}
+ for peer in d.get("peers",[]):
+  if peer.get("endpoint_host") or peer.get("disabled"):continue
+  endpoint=next((x.split()[1] for x in w.command(["wg","show",peer["interface"],"endpoints"]).stdout.splitlines() if len(x.split())>1 and x.split()[0]==peer["key"]),"")
+  if not endpoint or endpoint=="(none)" or not listens.get(peer["interface"]):continue
+  address=endpoint[1:].split("]:")[0] if endpoint.startswith("[") else endpoint.rsplit(":",1)[0]
+  inbound.append({"address":str(ipaddress.ip_address(address)),"port":int(endpoint.rsplit(":",1)[1]),"listen":listens[peer["interface"]]})
+ return inbound
+
 def cleanup(w,owned):
  w.command(["nft","delete","table","inet",TABLE])
  for slot in owned.get("slots",[]):
@@ -124,7 +146,8 @@ def sync(w,d,states):
     w.command(route+["metric","10"],check=True)
    else:w.command(["ip","-"+str(af),"route","flush","table",table,"type","unicast"])
    resources_changed=bool(w.rule(af,pref,["fwmark",hex(slot<<24)+"/"+hex(MASK),"lookup",table],pref in owned.get("priorities",[]))) or resources_changed
- rules=build_rules(uplinks,ports,states,list(ids.values()))
+ inbound=inbound_peers(w,d)
+ rules=build_rules(uplinks,ports,states,list(ids.values()),inbound)
  desired=hashlib.sha256("\n".join(rules).encode()).hexdigest()
  cache=w.readjson(w.RUN/"receiver-nft.json")
  current=w.audit.nft_fingerprint(w.command,TABLE)

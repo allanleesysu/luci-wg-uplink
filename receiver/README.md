@@ -4,7 +4,7 @@ Independent receiver-side service for OpenWrt. **No LuCI, no WG Uplink selector,
 
 It automatically discovers local WG listen ports and upstream netifd interfaces with native addresses/gateways. A configured local-outbound peer's current endpoint is excluded. Other incoming WG UDP flows are marked by ingress uplink; local replies restore that mark and use the same uplink.
 
-Learning is in nftables/conntrack, not one tcpdump process per listener. It also handles existing flows regardless of which direction created the conntrack entry.
+Learning is in nftables/conntrack, not one tcpdump process per listener. It learns only original inbound flows and restores reply-direction marks. Receiver-only listeners reject fresh locally initiated flows, which otherwise could advertise an unintended source address and cause the remote WG peer to roam. Configured outbound listeners are exempt; known inbound peers on mixed listeners receive tuple-specific guards. Existing incorrectly learned outbound flows must be cleared when migrating.
 
 ## Install on the receiving router
 

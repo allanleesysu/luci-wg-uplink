@@ -45,6 +45,15 @@ def main():
    inside(rx,["ip","rule","add","pref",str(200+slot),"fwmark",hex(slot<<24)+"/"+hex(core.MASK),"lookup",str(table)])
    uplinks.append({"slot":slot,"paths":[{"available":True,"af":4,"device":dev}]})
   inside(rx,["nft","-f","-"],"\n".join(core.build_rules(uplinks,[51820],[]))+"\n")
+  # A fresh receiver-originated flow must not advertise the wrong local WAN.
+  initiating="import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(('198.51.100.1',51820));s.sendto(b'rogue',('203.0.113.9',46000))"
+  listening="import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(1);s.bind(('203.0.113.9',46000));\ntry:s.recvfrom(64);print('unexpected')\nexcept TimeoutError:print('blocked')"
+  listener=subprocess.Popen(["ip","netns","exec",client,sys.executable,"-c",listening],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+  time.sleep(.2)
+  inside(rx,[sys.executable,"-c",initiating])
+  observed,errors=listener.communicate(timeout=3)
+  assert observed.strip()=="blocked",(observed,errors)
+  print("PASS passive receiver cannot originate a new flow from a different WAN source")
   after=exchange()
   assert after=="wgsct1",after
   print("PASS baseline reply uses preferred uplink, despite ingress on secondary")

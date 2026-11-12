@@ -6,7 +6,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 import wg_uplink_actions as audit
 import wg_uplink_lan as lan_routes
 from types import SimpleNamespace
-VERSION="1.3.0"
+VERSION="1.3.1"
 RUN=Path("/var/run/wg-uplink")
 PERSIST=Path("/etc/wg-uplink")
 DISCOVER="/usr/libexec/wg-uplink-discover.uc"
